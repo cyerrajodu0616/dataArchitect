@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0003 — OpenAI vs Open-Source Embeddings & Deep Dive Architecture</title>
+<link rel="stylesheet" href="../assets/lesson-style.css">
+</head>
+<body>
+
+<h1>OpenAI Embeddings vs Open-Source (BGE, E5, Instructor) & Deep Dive Architecture</h1>
+<p class="subtitle">Week 1, Day 3 — cost, latency, quality, privacy, MRL, and 2-stage retrieval</p>
+
+<p>Yesterday's lesson settled <em>which metric</em> to use. Today is one level up the stack: <em>which model produces the vectors in the first place</em>, and whether that model should live behind an API call or on hardware you own. This is a build-vs-buy decision — the exact shape of decision you've made a hundred times as a data engineer, just with a different noun (model instead of database, GPU instead of warehouse cluster).</p>
+
+<div class="retail-tag">Retail framing</div>
+<div class="example-box">
+<div class="label">Scenario</div>
+A retail product catalog has 4M SKUs, each re-embedded monthly as descriptions/attributes change, plus ~200K customer search queries embedded per day at request time. Two very different traffic shapes — bulk/batch vs real-time/low-latency — and the right embedding model choice can differ for each.
+</div>
+
+<h2>1. The Two Camps</h2>
+<p><strong>API-based (closed):</strong> OpenAI's <code>text-embedding-3-small</code> and <code>text-embedding-3-large</code>. You send text over the network, get a vector back. No infrastructure to run.</p>
+<p><strong>Open-source (self-hosted):</strong> BGE (BAAI General Embedding), E5 (Microsoft), Instructor (task-instruction-conditioned embeddings) — all distributed as weights you download and run yourself, typically via <code>sentence-transformers</code> or a dedicated inference server (TGI, vLLM, Infinity, TEI). You own the compute, scaling, and upgrades.</p>
+
+<h2>2. Deep Dive: Bi-Encoder vs. Cross-Encoder Mechanics</h2>
+<p>Embedding models like OpenAI <code>text-embedding-3</code>, BGE, and E5 are <strong>Bi-Encoders</strong> (Dual-Tower Transformers). Queries ($q$) and documents ($d$) are passed through independent transformer passes:</p>
+
+<p style="text-align: center; font-weight: bold; background: #f4f2ee; padding: 0.8rem; border-radius: 6px;">
+  $$\text{Score}_{\text{bi}}(q, d) = \langle E_Q(q), E_D(d) \rangle = \mathbf{v}_q \cdot \mathbf{v}_d$$
+</p>
+
+<ul>
+  <li><strong>Mechanism:</strong> $E_Q$ and $E_D$ map text independently into vectors $\mathbb{R}^d$.</li>
+  <li><strong>Computational Complexity:</strong>
+    <ul>
+      <li><strong>Offline Ingestion:</strong> $O(N)$ transformer forward passes to pre-compute vector index for $N$ documents.</li>
+      <li><strong>Query Time:</strong> $O(1)$ query forward pass + $O(\log N)$ Approximate Nearest Neighbor (ANN) index search (HNSW/IVFFlat). Total latency: <strong>&lt;15ms</strong>.</li>
+    </ul>
+  </li>
+  <li><strong>The Information Bottleneck:</strong> Because $q$ and $d$ do not interact inside self-attention layers, subtle nuances (e.g. <em>"lightweight boots BUT NOT steel toe"</em>) get compressed into a single static point, causing precision loss.</li>
+</ul>
+
+<h3>Cross-Encoder Physics (Stage 2: Precision Reranking)</h3>
+<p>In a <strong>Cross-Encoder</strong> (like <code>bge-reranker-large</code>), the query and document are concatenated and fed into a single Transformer together:</p>
+
+<p style="text-align: center; font-weight: bold; background: #f4f2ee; padding: 0.8rem; border-radius: 6px;">
+  $$\text{Score}_{\text{cross}}(q, d) = \text{Transformer}(\text{concat}(q, [\text{SEP}], d)) \to \text{Relevance Score} \in [0, 1]$$
+</p>
+
+<ul>
+  <li><strong>Mechanism:</strong> Every token in the query attends to every single token in the document across all cross-attention layers.</li>
+  <li><strong>Computational Complexity:</strong> Cannot pre-compute static vectors or index in vector DBs! Requires $K$ full Transformer evaluations for $K$ candidate documents ($O(K \cdot L^2)$ attention operations).</li>
+</ul>
+
+<div class="example-box">
+<div class="label">The Golden 2-Stage Production Pattern</div>
+<pre><code>User Query: "red leather running shoes size 10"
+       │
+       ▼
+[ Stage 1: Bi-Encoder Vector Search ]  ---> Pulls Top K=100 Candidates (<15ms via pgvector)
+       │
+       ▼
+[ Stage 2: Cross-Encoder Reranker ]    ---> Reranks 100 pairs jointly (<40ms via bge-reranker)
+       │
+       ▼
+[ Top 5 Final Context Chunks ]         ---> Sent to LLM Generator</code></pre>
+</div>
+
+<h2>3. Model Prefixes & Matryoshka Embeddings (MRL)</h2>
+<h3>Asymmetric Retrieval & Prefixes</h3>
+<ul>
+  <li><strong>Symmetric Matching:</strong> Comparing sentence vs. sentence (e.g., duplicate article detection). Both texts have identical length and role.</li>
+  <li><strong>Asymmetric Matching:</strong> Short Search Query ($L \approx 5$ tokens) vs. Long Document Chunk ($L \approx 300$ tokens).</li>
+  <li><strong>Prefix Requirement:</strong> Models like E5 and BGE learned distinct positional and role embeddings during contrastive training:
+    <pre><code># E5 Example: Must include prefixes!
+query_vec = model.encode("query: mens trail running boots")
+doc_vec = model.encode("passage: The Waterproof Alpine Boot features...")</code></pre>
+    <p>⚠️ <em>Warning: Omitting <code>query: </code> or <code>passage: </code> causes vectors to land in mismatched subspaces, dropping nDCG@10 by up to <strong>30%</strong>.</em></p>
+  </li>
+</ul>
+
+<h3>Matryoshka Representation Learning (MRL) Internals</h3>
+<p>MRL models (like OpenAI <code>text-embedding-3</code>) apply a <strong>nested loss function</strong> across multiple sub-dimensions:</p>
+
+<p style="text-align: center; font-weight: bold; background: #f4f2ee; padding: 0.8rem; border-radius: 6px;">
+  $$\mathcal{L}_{\text{MRL}} = \sum_{d \in \{256, 512, 1024, 1536\}} w_d \cdot \mathcal{L}_{\text{contrastive}}\left(\mathbf{v}_{:d}^{(q)}, \mathbf{v}_{:d}^{(d)}\right)$$
+</p>
+
+<ul>
+  <li><strong>Early dimensions ($\mathbf{v}_{[:256]}$)</strong> capture broad semantic categories (e.g., "footwear vs cookware").</li>
+  <li><strong>Later dimensions ($\mathbf{v}_{[256:1536]}$)</strong> capture fine-grained distinctions (e.g., "waterproof vs water-resistant").</li>
+</ul>
+
+<div class="example-box">
+<div class="label">Truncation & Re-Normalization Code</div>
+<pre><code>import numpy as np
+
+def truncate_mrl_vector(vec_1536: np.ndarray, target_dim: int = 256) -> np.ndarray:
+    truncated = vec_1536[:target_dim]
+    # Crucial: Must re-normalize to unit length for cosine similarity!
+    return truncated / np.linalg.norm(truncated)</code></pre>
+<p><strong>Architect Impact:</strong> Truncating 1536d &rarr; 256d retains <strong>~98.5% accuracy</strong> while reducing pgvector RAM footprint by <strong>6x</strong> and accelerating ANN index scans by <strong>3x</strong>.</p>
+</div>
+
+<h2>4. Production QPS Crossover Math: API vs. Self-Hosted (TEI)</h2>
+
+<p><strong>Scenario:</strong> 10 Million SKUs (100 tokens/SKU). Monthly Batch Re-embedding + Real-Time Queries ($Q$ QPS, 15 tokens/query).</p>
+
+<ul>
+  <li><strong>OpenAI <code>text-embedding-3-small</code> API:</strong> Batch re-embed = 1B tokens &times; $0.01 / 1M = <strong>$10.00 / month</strong>.
+  <br>Real-time API cost = $\frac{Q \times 15 \times 2,592,000}{1,000,000} \times \$0.02 = \mathbf{\$0.7776 \times Q \text{ / month}}$.</li>
+  <li><strong>Self-Hosted TEI on AWS GPU (g5.xlarge - NVIDIA A10G):</strong> Fixed cost = <strong>$724.32 / month</strong> ($1.006/hr). TEI container serves ~1,200 QPS at &lt;10ms latency.</li>
+</ul>
+
+<div class="example-box">
+<div class="label">The QPS Crossover Derivation</div>
+$$\$0.7776 \times Q = \$724.32 \implies Q = \frac{724.32}{0.7776} \approx \mathbf{931.5 \text{ QPS}}$$
+
+<pre><code>Monthly Cost ($)
+ ^
+ |                                                  / (OpenAI API Cost)
+ |                                                 /
+ |                                                /
+$724 |------------------------------------------/---------- (Self-Hosted GPU Cost)
+ |                                             /|
+ |__________________________________________/__|____________________> QPS
+                                          0   931 QPS</code></pre>
+
+<ul>
+  <li><strong>For $Q &lt; 930$ QPS:</strong> <strong>OpenAI API wins on cost AND operations.</strong> At 100 QPS, API costs only ~$77/month vs. $724/month for dedicated GPU hardware. Zero MLOps, zero cluster maintenance.</li>
+  <li><strong>For $Q &gt; 930$ QPS:</strong> <strong>Self-Hosted TEI on GPU wins.</strong> At 2,000 QPS, OpenAI API costs ~$1,555/month vs. $1,448/month for 2x GPU instances, providing higher QPS capacity, lower tail latency, and 100% PII data sovereignty.</li>
+</ul>
+</div>
+
+<h2>5. Data Privacy, Governance & Compliance Spectrum</h2>
+
+<table style="width:100%; border-collapse: collapse; margin: 1.5rem 0; border: 1px solid #e2ded8;">
+  <thead>
+    <tr style="background-color: #f4f2ee;">
+      <th style="padding: 10px; border: 1px solid #e2ded8;">Privacy Level</th>
+      <th style="padding: 10px; border: 1px solid #e2ded8;">Architecture</th>
+      <th style="padding: 10px; border: 1px solid #e2ded8;">Compliance & Data Boundary</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 10px; border: 1px solid #e2ded8;"><strong>Level 1: Public API</strong></td>
+      <td style="padding: 10px; border: 1px solid #e2ded8;">OpenAI Public Endpoint (<code>api.openai.com</code>)</td>
+      <td style="padding: 10px; border: 1px solid #e2ded8;">Data leaves network perimeter. 30-day encrypted retention logs. Risk of PII exposure.</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px; border: 1px solid #e2ded8;"><strong>Level 2: Enterprise Cloud VPC</strong></td>
+      <td style="padding: 10px; border: 1px solid #e2ded8;">Azure OpenAI / AWS Bedrock (PrivateLink)</td>
+      <td style="padding: 10px; border: 1px solid #e2ded8;">Traffic stays inside enterprise VNet. Zero data retention. Customer-Managed Keys (CMK).</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px; border: 1px solid #e2ded8;"><strong>Level 3: Self-Hosted Air-Gapped</strong></td>
+      <td style="padding: 10px; border: 1px solid #e2ded8;">BGE / E5 on PyTorch / TEI in K8s</td>
+      <td style="padding: 10px; border: 1px solid #e2ded8;">100% Data Sovereignty. Zero network egress. Ideal for healthcare (HIPAA), PCI-DSS, defense.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>6. Code Examples — Run It Yourself</h2>
+
+<p>Three standalone Python scripts that implement every concept from today's lesson. Each runs independently with no shared state. Install deps once with <code>uv add sentence-transformers openai numpy python-dotenv</code>.</p>
+
+<style>
+  /* ─── Code Tab System ─────────────────────────────────────────── */
+  .code-tabs { margin: 2rem 0; border: 1px solid #e2ded8; border-radius: 10px; overflow: hidden; }
+  .code-tab-btns { display: flex; background: #f4f2ee; border-bottom: 1px solid #e2ded8; }
+  .code-tab-btn {
+    flex: 1; padding: 0.75rem 1rem; border: none; background: none; cursor: pointer;
+    font-size: 0.85rem; font-weight: 600; color: #666; border-right: 1px solid #e2ded8;
+    transition: background 0.2s, color 0.2s;
+  }
+  .code-tab-btn:last-child { border-right: none; }
+  .code-tab-btn.active { background: #fff; color: #c8602a; border-bottom: 2px solid #c8602a; }
+  .code-tab-pane { display: none; padding: 0; }
+  .code-tab-pane.active { display: block; }
+  .code-pane-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.6rem 1.2rem; background: #1e1e2e; border-bottom: 1px solid #333;
+  }
+  .code-pane-header span { color: #888; font-size: 0.8rem; font-family: monospace; }
+  .copy-btn {
+    background: #333; color: #ccc; border: 1px solid #555; border-radius: 4px;
+    padding: 0.25rem 0.7rem; font-size: 0.75rem; cursor: pointer; transition: background 0.2s;
+  }
+  .copy-btn:hover { background: #555; color: #fff; }
+  .code-tabs pre {
+    margin: 0; padding: 1.2rem 1.4rem; background: #1e1e2e; color: #cdd6f4;
+    font-size: 0.8rem; line-height: 1.6; overflow-x: auto;
+    border-radius: 0; white-space: pre;
+  }
+  .code-tabs code { font-family: "Fira Code", "Cascadia Code", monospace; }
+  .code-run-tip {
+    padding: 0.65rem 1.2rem; background: #0d1117; border-top: 1px solid #333;
+    font-size: 0.78rem; color: #7ec8a4; font-family: monospace;
+  }
+  /* syntax colours */
+  .t-kw  { color: #cba6f7; }   /* keyword */
+  .t-fn  { color: #89b4fa; }   /* function / def */
+  .t-str { color: #a6e3a1; }   /* string */
+  .t-cm  { color: #6c7086; font-style: italic; } /* comment */
+  .t-num { color: #fab387; }   /* number */
+  .t-var { color: #cdd6f4; }   /* variable */
+</style>
+
+<div class="code-tabs" id="code-tabs-day3">
+  <div class="code-tab-btns">
+    <button class="code-tab-btn active" onclick="switchTab(event,'tab-bi')">① Bi vs Cross-Encoder</button>
+    <button class="code-tab-btn" onclick="switchTab(event,'tab-mrl')">② MRL &amp; Prefixes</button>
+    <button class="code-tab-btn" onclick="switchTab(event,'tab-qps')">③ QPS Cost Simulator</button>
+  </div>
+
+  <!-- ── TAB 1: bi_vs_cross_encoder.py ─────────────────────────── -->
+  <div class="code-tab-pane active" id="tab-bi">
+    <div class="code-pane-header">
+      <span>bi_vs_cross_encoder.py</span>
+      <button class="copy-btn" onclick="copyCode('code-bi')">Copy</button>
+    </div>
+    <pre><code id="code-bi">"""
+Week 1, Day 3 — Deep Dive Code 1: Bi-Encoder vs. Cross-Encoder 2-Stage Retrieval
+
+Demonstrates:
+  Stage 1: Bi-Encoder vector retrieval (O(1) index lookup to get top K candidates)
+  Stage 2: Cross-Encoder joint re-ranking (O(K) transformer cross-attention pass)
+
+Requires:
+  uv add sentence-transformers numpy
+"""
+
+import numpy as np
+from sentence_transformers import SentenceTransformer, CrossEncoder
+
+# 1. Load Bi-Encoder (Stage 1) and Cross-Encoder (Stage 2)
+print("Loading Stage 1 Bi-Encoder (bge-small-en-v1.5)...")
+bi_encoder = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+print("Loading Stage 2 Cross-Encoder (bge-reranker-base)...")
+cross_encoder = CrossEncoder("BAAI/bge-reranker-base")
+
+# 2. Product Catalog (Documents)
+DOCUMENTS = [
+    "Men's Waterproof Trail Running Boots - Heavy Duty Steel Toe",
+    "Women's Lightweight Cushion Running Sneakers - Blue / Size 8",
+    "Workwear Denim Jeans with Reinforced Steel Rivets",
+    "Stainless Steel Non-Stick 10-Piece Kitchen Cookware Set",
+    "Men's Casual Leather Slip-On Loafers - Brown",
+]
+
+QUERY = "steel toe boots for work"
+
+print(f"\nQuery: '{QUERY}'\n" + "-"*50)
+
+# --- STAGE 1: Bi-Encoder Retrieval (Top 4 Candidates) ---
+# Note: BGE requires query prefix for asymmetric search
+query_embedding = bi_encoder.encode(
+    f"Represent this sentence for searching relevant passages: {QUERY}"
+)
+doc_embeddings = bi_encoder.encode(DOCUMENTS)
+
+# Cosine similarity: dot(q, d) since vectors are L2-normalised
+scores_stage1 = np.dot(doc_embeddings, query_embedding) / (
+    np.linalg.norm(doc_embeddings, axis=1) * np.linalg.norm(query_embedding)
+)
+
+top_k_indices = np.argsort(scores_stage1)[::-1][:4]
+
+print("\n--- STAGE 1: Bi-Encoder Vector Search Results (Top 4) ---")
+candidate_docs = []
+for rank, idx in enumerate(top_k_indices):
+    score = scores_stage1[idx]
+    doc_text = DOCUMENTS[idx]
+    candidate_docs.append(doc_text)
+    print(f"Rank {rank+1} (Score: {score:.4f}): {doc_text}")
+
+# --- STAGE 2: Cross-Encoder Re-ranking ---
+# Build (Query, Document) pairs for joint cross-attention scoring
+pairs = [[QUERY, doc] for doc in candidate_docs]
+rerank_scores = cross_encoder.predict(pairs)
+
+reranked_indices = np.argsort(rerank_scores)[::-1]
+
+print("\n--- STAGE 2: Cross-Encoder Reranked Final Results ---")
+for rank, idx in enumerate(reranked_indices):
+    score = rerank_scores[idx]
+    doc_text = candidate_docs[idx]
+    print(f"Final Rank {rank+1} (Rerank Score: {score:.4f}): {doc_text}")</code></pre>
+    <div class="code-run-tip">▶ python Claude/week1/day3/bi_vs_cross_encoder.py</div>
+  </div>
+
+  <!-- ── TAB 2: mrl_and_prefixes.py ────────────────────────────── -->
+  <div class="code-tab-pane" id="tab-mrl">
+    <div class="code-pane-header">
+      <span>mrl_and_prefixes.py</span>
+      <button class="copy-btn" onclick="copyCode('code-mrl')">Copy</button>
+    </div>
+    <pre><code id="code-mrl">"""
+Week 1, Day 3 — Deep Dive Code 2: Matryoshka Embeddings (MRL) & Prefix Mechanics
+
+Demonstrates:
+  1. Truncating 1536-dim OpenAI MRL embeddings down to 512d & 256d with re-normalization
+  2. The impact of prefixes ('query: ' vs 'passage: ') on open-source E5/BGE models
+
+Requires:
+  uv add openai numpy python-dotenv sentence-transformers
+"""
+
+import numpy as np
+from dotenv import load_dotenv
+from openai import OpenAI
+from sentence_transformers import SentenceTransformer
+
+load_dotenv()
+client = OpenAI()
+
+# --- PART 1: Matryoshka Representation Learning (MRL) Vector Truncation ---
+print("=== PART 1: OpenAI MRL Vector Truncation (1536d -> 512d -> 256d) ===")
+
+TEXT_A = "Customer requested a refund on footwear due to sizing issue."
+TEXT_B = "The customer returned the shoes because they didn't fit."
+TEXT_C = "The warehouse received a new shipment of stainless steel cookware."
+
+def get_openai_vec(text: str) -> np.ndarray:
+    resp = client.embeddings.create(model="text-embedding-3-small", input=text)
+    return np.array(resp.data[0].embedding)
+
+vec_a_1536 = get_openai_vec(TEXT_A)
+vec_b_1536 = get_openai_vec(TEXT_B)
+vec_c_1536 = get_openai_vec(TEXT_C)
+
+def truncate_and_normalize(vec: np.ndarray, dim: int) -> np.ndarray:
+    """Truncate MRL vector to `dim` and re-normalize to unit length."""
+    truncated = vec[:dim]
+    return truncated / np.linalg.norm(truncated)
+
+def cos_sim(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b))   # both unit vectors, so dot == cosine
+
+for dim in [1536, 512, 256]:
+    a = truncate_and_normalize(vec_a_1536, dim)
+    b = truncate_and_normalize(vec_b_1536, dim)
+    c = truncate_and_normalize(vec_c_1536, dim)
+
+    sim_ab = cos_sim(a, b)
+    sim_ac = cos_sim(a, c)
+
+    print(f"\n--- Dimension {dim:4d} ---")
+    print(f"  Sim(Shoes Refund, Returned Shoes) : {sim_ab:.5f}")
+    print(f"  Sim(Shoes Refund, Cookware)       : {sim_ac:.5f}")
+    print(f"  Margin (Related vs Irrelevant)    : {sim_ab - sim_ac:.5f}")
+
+
+# --- PART 2: Asymmetric Model Prefixes (E5 / BGE) ---
+print("\n\n=== PART 2: Asymmetric Model Prefixes (E5 Model) ===")
+e5_model = SentenceTransformer("intfloat/e5-small-v2")
+
+query   = "shoes return policy"
+passage = "Customers may return footwear within 30 days of purchase for a full refund."
+
+# Scenario A: WITH correct prefixes
+q_correct = e5_model.encode(f"query: {query}")
+p_correct = e5_model.encode(f"passage: {passage}")
+sim_with = float(
+    np.dot(q_correct, p_correct) /
+    (np.linalg.norm(q_correct) * np.linalg.norm(p_correct))
+)
+
+# Scenario B: WITHOUT prefixes (wrong — vectors land in mismatched subspace)
+q_wrong = e5_model.encode(query)
+p_wrong = e5_model.encode(passage)
+sim_without = float(
+    np.dot(q_wrong, p_wrong) /
+    (np.linalg.norm(q_wrong) * np.linalg.norm(p_wrong))
+)
+
+print(f"Similarity WITH 'query:' and 'passage:' prefixes : {sim_with:.5f}")
+print(f"Similarity WITHOUT prefixes                     : {sim_without:.5f}")
+print(f"Accuracy penalty for omitting prefixes           : {(sim_with - sim_without):.5f}")</code></pre>
+    <div class="code-run-tip">▶ python Claude/week1/day3/mrl_and_prefixes.py &nbsp; (requires OPENAI_API_KEY in .env)</div>
+  </div>
+
+  <!-- ── TAB 3: qps_crossover_sim.py ───────────────────────────── -->
+  <div class="code-tab-pane" id="tab-qps">
+    <div class="code-pane-header">
+      <span>qps_crossover_sim.py</span>
+      <button class="copy-btn" onclick="copyCode('code-qps')">Copy</button>
+    </div>
+    <pre><code id="code-qps">"""
+Week 1, Day 3 — Deep Dive Code 3: Production QPS Crossover & Cost Simulator
+
+Simulates monthly costs of OpenAI Embedding API vs. Self-Hosted GPU TEI Container
+based on input QPS, token lengths, GPU instance hourly rates, and dataset sizes.
+
+No external libraries required — pure Python math.
+
+Run:
+  python Claude/week1/day3/qps_crossover_sim.py
+"""
+
+def calculate_costs(
+    num_skus: int          = 10_000_000,  # 10M SKU catalog
+    sku_token_len: int     = 100,         # avg tokens per product description
+    query_token_len: int   = 15,          # avg tokens per search query
+    qps_target: float      = 500.0,       # real-time queries per second
+    openai_batch_rate_per_m: float  = 0.01,   # $/M tokens (Batch API)
+    openai_realtime_rate_per_m: float = 0.02, # $/M tokens (Real-Time API)
+    gpu_hourly_cost: float = 1.006,       # AWS g5.xlarge (1x NVIDIA A10G)
+    gpu_max_qps_capacity: int = 1200      # TEI container throughput ceiling
+):
+    print("="*65)
+    print("      ENTERPRISE EMBEDDING COST & QPS CROSSOVER CALCULATOR      ")
+    print("="*65)
+    print(f"Catalog Size       : {num_skus:,} SKUs ({sku_token_len} tokens/SKU)")
+    print(f"Real-Time Traffic  : {qps_target} Queries/Sec ({query_token_len} tokens/query)")
+    print(f"GPU Host Hardware  : AWS g5.xlarge (${gpu_hourly_cost:.3f}/hr)")
+    print("-" * 65)
+
+    # 1. Batch Monthly Re-embed Cost (one full catalog pass per month)
+    total_batch_tokens = num_skus * sku_token_len
+    batch_cost_openai  = (total_batch_tokens / 1_000_000) * openai_batch_rate_per_m
+
+    # 2. Real-time Monthly Query Cost
+    seconds_in_month   = 30 * 24 * 3600         # 2,592,000 seconds
+    monthly_queries    = qps_target * seconds_in_month
+    total_query_tokens = monthly_queries * query_token_len
+    realtime_cost_openai = (total_query_tokens / 1_000_000) * openai_realtime_rate_per_m
+
+    total_openai_monthly = batch_cost_openai + realtime_cost_openai
+
+    # 3. Self-Hosted GPU Cost (fixed monthly regardless of query volume)
+    gpus_needed       = max(1, int((qps_target + gpu_max_qps_capacity - 1) // gpu_max_qps_capacity))
+    total_gpu_monthly = gpus_needed * (gpu_hourly_cost * 24 * 30)
+
+    # 4. Exact Crossover QPS Derivation
+    # Solve: Q * query_tokens * seconds/month / 1M * realtime_rate = gpu_monthly_cost
+    # => Q = gpu_monthly_cost / (query_tokens * seconds/month / 1M * realtime_rate)
+    tokens_per_qps_month = query_token_len * seconds_in_month
+    api_cost_per_qps     = (tokens_per_qps_month / 1_000_000) * openai_realtime_rate_per_m
+    crossover_qps        = (gpu_hourly_cost * 24 * 30) / api_cost_per_qps
+
+    print(f"1. OpenAI Monthly Cost Breakdown:")
+    print(f"   - Catalog Re-embed Batch (1B tokens) : ${batch_cost_openai:,.2f}")
+    print(f"   - Real-Time Queries ({total_query_tokens/1e6:.1f}M tokens): ${realtime_cost_openai:,.2f}")
+    print(f"   -> TOTAL OPENAI COST                 : ${total_openai_monthly:,.2f} / month")
+    print(f"\n2. Self-Hosted GPU (TEI) Monthly Cost:")
+    print(f"   - GPUs Required ({gpus_needed}x A10G)           : ${total_gpu_monthly:,.2f} / month")
+    print("-" * 65)
+
+    if total_openai_monthly &lt; total_gpu_monthly:
+        savings = total_gpu_monthly - total_openai_monthly
+        print(f"VERDICT at {qps_target} QPS : OPENAI API WINS (Saves ${savings:,.2f}/mo over self-hosting)")
+    else:
+        savings = total_openai_monthly - total_gpu_monthly
+        print(f"VERDICT at {qps_target} QPS : SELF-HOSTED GPU WINS (Saves ${savings:,.2f}/mo over OpenAI)")
+
+    print(f"\nEXACT CROSSOVER THRESHOLD: {crossover_qps:.1f} QPS")
+    print(f"  • Below {crossover_qps:.0f} QPS -> Managed OpenAI API is cheaper.")
+    print(f"  • Above {crossover_qps:.0f} QPS -> Self-hosted GPU container is cheaper.")
+    print("="*65)
+
+
+if __name__ == "__main__":
+    # Run at three different traffic levels to see verdict flip
+    for qps in [100.0, 500.0, 1500.0]:
+        calculate_costs(qps_target=qps)
+        print()</code></pre>
+    <div class="code-run-tip">▶ python Claude/week1/day3/qps_crossover_sim.py &nbsp; (no API key needed — pure math)</div>
+  </div>
+</div><!-- /code-tabs -->
+
+<script>
+function switchTab(evt, tabId) {
+  var container = document.getElementById('code-tabs-day3');
+  container.querySelectorAll('.code-tab-pane').forEach(function(p) { p.classList.remove('active'); });
+  container.querySelectorAll('.code-tab-btn').forEach(function(b)  { b.classList.remove('active'); });
+  document.getElementById(tabId).classList.add('active');
+  evt.currentTarget.classList.add('active');
+}
+function copyCode(elemId) {
+  var text = document.getElementById(elemId).textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = event.currentTarget;
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+}
+</script>
+
+<h2>7. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Architectural Knowledge Check</h3>
+
+<div class="quiz">
+<div class="q">1. Why are embedding models designed as Bi-Encoders instead of Cross-Encoders for initial candidate retrieval?</div>
+<button data-correct="true">Bi-Encoders allow document vectors to be pre-computed independently and indexed for O(log N) vector search.</button>
+<button data-correct="false">Bi-Encoders have higher accuracy than Cross-Encoders on every benchmark.</button>
+<button data-correct="false">Cross-Encoders cannot process text longer than 128 tokens.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. At approximately what QPS volume does a self-hosted GPU container (TEI on AWS A10G @ $724/mo) become cheaper than OpenAI's real-time API?</div>
+<button data-correct="false">50 QPS</button>
+<button data-correct="false">250 QPS</button>
+<button data-correct="true">~930 QPS</button>
+<button data-correct="false">10,000 QPS</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. What must you do when truncating a 1536-dim Matryoshka (MRL) vector to 256 dimensions before computing cosine similarity?</div>
+<button data-correct="false">Multiply the vector by 6.0</button>
+<button data-correct="true">Re-normalize the 256-dim vector to unit length (norm = 1.0)</button>
+<button data-correct="false">Convert floats to integers</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Have questions on privacy pipelines, PrivateLink, or MRL? Ask your agent in your daily chat session.</p>
+
+<div class="nav">
+<a href="../day2/0002-distance-metrics.html">&larr; Day 2: Distance Metrics</a>
+<a href="../day4/0004-fine-tuning-embeddings.html">Day 4: Fine-Tuning &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct
+        ? 'Correct! Excellent mastery of Day 3 topics.'
+        : 'Incorrect. Review the sections above.';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

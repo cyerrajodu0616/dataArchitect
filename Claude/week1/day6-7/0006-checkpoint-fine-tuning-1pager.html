@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0006 — Week 1 Checkpoint: Embedding Architecture 1-Pager</title>
+<link rel="stylesheet" href="../assets/lesson-style.css">
+</head>
+<body>
+
+<h1>Week 1 Checkpoint: Architectural Decision Document</h1>
+<p class="subtitle">Week 1, Days 6–7 — portfolio deliverable & interview-ready artifact</p>
+
+<p>Congratulations on completing Week 1! This 1-page architectural decision document synthesizes everything you've learned. You can include this in your portfolio or present it to an engineering team during system design interviews.</p>
+
+<div class="example-box" style="border-left-color: #2e6b3e;">
+<div class="label" style="color: #2e6b3e;">Portfolio Deliverable Template</div>
+<h2>ARCHITECTURAL DECISION RECORD (ADR-001)</h2>
+<p><strong>Title:</strong> Embedding Model Selection & Fine-Tuning Strategy for Enterprise Retail Search vs Personal Agent<br>
+<strong>Author:</strong> Yc (AI Data Platform Architect)<br>
+<strong>Status:</strong> Approved / Production</p>
+
+<h3>1. Context & Business Problem</h3>
+<p>Vector embeddings convert unstructured text into dense floating-point representations where semantic similarity corresponds to mathematical proximity. In a retail platform (4M SKUs, 200k daily search queries), embedding quality directly impacts search relevance, customer conversion, and infrastructure costs. For our internal Personal Agent (~10k chunks, low QPS), operational simplicity dominates.</p>
+
+<h3>2. Evaluation of Options</h3>
+<ul>
+  <li><strong>Option A (Closed API - OpenAI text-embedding-3-small):</strong> $0.02 / 1M tokens. Zero MLOps overhead. 1536 dimensions (supports MRL truncation to 512/256). Pre-normalized unit vectors allow dot product $\equiv$ cosine similarity.</li>
+  <li><strong>Option B (Self-Hosted Open Source - BGE / E5):</strong> $0 per token API fee. Requires dedicated PyTorch / TEI GPU container hosting. Allows data sovereignty / PII compliance and custom fine-tuning.</li>
+  <li><strong>Option C (Domain Fine-Tuning):</strong> Contrastive learning with Triplet Loss / MNRLoss on open-source weights using proprietary retail pairs.</li>
+</ul>
+
+<h3>3. Decision & Trade-Off Matrix</h3>
+<table style="width:100%; border-collapse: collapse; margin: 1rem 0; border: 1px solid #e2ded8;">
+  <thead>
+    <tr style="background-color: #f4f2ee;">
+      <th style="padding: 8px; border: 1px solid #e2ded8;">Use Case</th>
+      <th style="padding: 8px; border: 1px solid #e2ded8;">Selected Approach</th>
+      <th style="padding: 8px; border: 1px solid #e2ded8;">Key Driver</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; border: 1px solid #e2ded8;"><strong>Personal Agent</strong></td>
+      <td style="padding: 8px; border: 1px solid #e2ded8;">OpenAI text-embedding-3-small + Cosine Sim (pgvector)</td>
+      <td style="padding: 8px; border: 1px solid #e2ded8;">Negligible cost (<$0.05/yr), zero MLOps burden.</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; border: 1px solid #e2ded8;"><strong>Retail Batch Catalog</strong></td>
+      <td style="padding: 8px; border: 1px solid #e2ded8;">OpenAI Batch API ($0.01 / 1M tokens)</td>
+      <td style="padding: 8px; border: 1px solid #e2ded8;">Monthly re-embed of 4M SKUs costs ~$6. API beats GPU ownership.</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; border: 1px solid #e2ded8;"><strong>High QPS / PII Queries</strong></td>
+      <td style="padding: 8px; border: 1px solid #e2ded8;">Self-Hosted BGE on GPU + Hybrid Search (BM25)</td>
+      <td style="padding: 8px; border: 1px solid #e2ded8;">Data privacy, <15ms tail latency, GPU QPS amortization.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>4. Fine-Tuning Decision Boundary</h3>
+<p><strong>Do NOT fine-tune embeddings</strong> unless Hybrid Search (BM25 + Dense Vector) and 2-stage Cross-Encoder Reranking fail to meet precision targets on domain-specific benchmarks. Reranking solves 90% of retrieval relevance issues without the cost of maintaining custom PyTorch pipelines.</p>
+
+</div>
+
+<div class="quiz-container">
+<h3>Week 1 Mastery Checkpoint</h3>
+<div class="quiz">
+<div class="q">What is the #1 architectural rule for embedding model selection?</div>
+<button data-correct="true">Default to managed APIs for low volume/batch jobs; self-host on GPUs only when PII constraints, sub-20ms latency, or high sustained QPS justify the MLOps overhead.</button>
+<button data-correct="false">Always fine-tune your own embedding model from scratch before launching.</button>
+<button data-correct="false">Always choose the #1 model on the MTEB leaderboard regardless of cost or domain.</button>
+<div class="feedback"></div>
+</div>
+</div>
+
+<div class="nav">
+<a href="../day5/0005-embedding-model-justification.html">&larr; Day 5: Justification</a>
+<a href="../../week2/day1/0007-pgvector-fundamentals.html">Week 2, Day 1: Vector DBs &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct
+        ? 'Correct! You have mastered Week 1 Embedding Architecture.'
+        : 'Incorrect.';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

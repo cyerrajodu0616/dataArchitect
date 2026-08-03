@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0002 — Distance Metrics</title>
+<link rel="stylesheet" href="../assets/lesson-style.css">
+</head>
+<body>
+
+<h1>Distance Metrics: Cosine, Dot Product, Euclidean</h1>
+<p class="subtitle">Week 1, Day 2 — how "closeness" gets defined in vector space, and why it matters for retrieval quality</p>
+
+<p>
+Yesterday you established that an embedding is a vector representation of meaning — a point in
+high-dimensional space. A vector by itself is useless. What makes it useful is a way to measure
+<em>how close</em> two vectors are. That's what a distance metric (or its inverse, a similarity
+metric) does. Pick the wrong one and your retrieval quietly degrades — no error, no exception,
+just worse results that are hard to diagnose.
+</p>
+
+<h2>The three you'll actually encounter</h2>
+
+<h3>1. Euclidean distance (L2)</h3>
+<p>
+Straight-line distance between two points — the Pythagorean theorem generalized to N dimensions.
+For vectors <code>a</code> and <code>b</code>:
+</p>
+<pre>d(a, b) = sqrt( Σ (a_i − b_i)² )</pre>
+<p>
+Smaller = closer. This is the metric your intuition already has from geometry class. It's sensitive
+to <strong>both</strong> direction and magnitude — a vector twice as long, pointing the same way,
+registers as far away.
+</p>
+
+<h3>2. Dot product</h3>
+<pre>a · b = Σ (a_i × b_i)</pre>
+<p>
+Larger = more similar (it's a similarity, not a distance). It rewards vectors that point the same
+way <em>and</em> have large magnitude — a vector's own length inflates its dot product with
+everything else, including itself. That magnitude-sensitivity is the whole story with dot product:
+it's cheap to compute (one multiply-accumulate pass, no square root), but it conflates "similar
+direction" with "large magnitude," which is a problem if magnitude in your embedding space carries
+no real semantic content.
+</p>
+
+<h3>3. Cosine similarity</h3>
+<pre>cos(a, b) = (a · b) / (‖a‖ × ‖b‖)</pre>
+<p>
+This is the dot product, <strong>normalized</strong> by both vectors' lengths. What's left is
+purely the angle between them — magnitude is divided out entirely. Range is −1 (opposite) to 1
+(identical direction). Because it isolates direction, cosine answers a narrower, more useful
+question: "do these two vectors point the same way in meaning-space?" — regardless of how long
+either one happens to be.
+</p>
+
+<div class="example-box">
+<div class="label">Worked example</div>
+Take two product-description embeddings, <code>a</code> and <code>b</code>, where <code>b</code>
+happens to be exactly <code>2 × a</code> (same direction, doubled magnitude).
+<ul>
+<li>Euclidean distance: large — treats them as far apart, even though they point identically.</li>
+<li>Dot product: <code>a·b = a·(2a) = 2(a·a)</code> — doubled, purely from <code>b</code>'s length. Looks "more similar" for the wrong reason.</li>
+<li>Cosine: <code>cos(a,b) = 1.0</code> — correctly identical, because the normalization cancels the magnitude difference out.</li>
+</ul>
+Cosine is the only one of the three that isn't fooled by this.
+</div>
+
+<h2>Why magnitude is noise, not signal, in most text embeddings</h2>
+<p>
+In a lot of embedding models, a vector's magnitude ends up correlated with things you don't want
+driving your retrieval — like how long or generic the source text was — rather than with how
+strongly it expresses a concept. Direction, not length, is where the semantic content lives.
+That's a modeling choice baked in at training time: models like OpenAI's <code>text-embedding-3</code>
+family are trained with a contrastive objective that explicitly optimizes cosine similarity between
+related pairs and pushes it down for unrelated pairs. The model is <em>told</em> during training
+that angle is what matters. Using a different metric at inference time than the one the model was
+optimized for throws away that training signal.
+</p>
+
+<p>
+One practical wrinkle: OpenAI's embeddings are returned pre-normalized to unit length (‖v‖ = 1).
+When every vector has the same magnitude, dot product and cosine become mathematically identical —
+dividing by 1 × 1 does nothing. This is why you'll see pgvector examples using the
+<code>&lt;#&gt;</code> (negative inner product) operator against OpenAI embeddings and calling it
+"cosine similarity" — for these specific vectors, that's a true statement, and dot product is
+slightly cheaper to compute since it skips the normalization step. But that shortcut only holds
+because OpenAI normalized on your behalf. If you ever mix in vectors that aren't unit-normalized —
+a different model, a manually-averaged vector, a raw pooled hidden state — dot product and cosine
+diverge again, and dot product silently starts rewarding magnitude.
+</p>
+
+<div class="retail-tag">Retail example</div>
+<div class="example-box">
+<div class="label">Product catalog search</div>
+Two product description embeddings can point in nearly the same direction (same product concept)
+while one description is three sentences and the other is thirty words padded with SEO keywords.
+If you retrieved with raw dot product on non-normalized vectors, the longer, keyword-stuffed
+description could win on magnitude alone — semantically weaker but numerically "bigger." Cosine
+strips that out and ranks on meaning.
+</div>
+
+<h2>Your Elasticsearch experience is the right anchor here — and also the contrast</h2>
+<p>
+You've done entity resolution with Elasticsearch trigram search at ~100M rows. That's worth
+placing side by side with cosine, because it clarifies what's actually different about semantic
+retrieval — the distinction isn't really about the metric formula, it's about <strong>what space
+you're measuring distance in</strong>.
+</p>
+
+<table style="width:100%; border-collapse:collapse; margin:1.5rem 0; font-family:-apple-system,sans-serif; font-size:0.92rem;">
+<tr style="border-bottom:2px solid var(--ink);">
+  <th style="text-align:left; padding:0.5rem;">​</th>
+  <th style="text-align:left; padding:0.5rem;">Trigram / edit-distance family</th>
+  <th style="text-align:left; padding:0.5rem;">Cosine on embeddings</th>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.5rem; font-weight:600;">What space</td>
+  <td style="padding:0.5rem;">Character n-grams / edit operations</td>
+  <td style="padding:0.5rem;">Learned semantic space</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.5rem; font-weight:600;">Catches</td>
+  <td style="padding:0.5rem;">Typos, near-duplicate strings, prefix/suffix overlap</td>
+  <td style="padding:0.5rem;">Synonyms, paraphrase, conceptual similarity</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.5rem; font-weight:600;">Misses</td>
+  <td style="padding:0.5rem;">"sneakers" vs "trainers" — zero literal overlap, same meaning</td>
+  <td style="padding:0.5rem;">Exact SKU / model-number discrimination — "iPhone 15" vs "iPhone 15 Pro" can land close in meaning-space despite being different SKUs</td>
+</tr>
+<tr>
+  <td style="padding:0.5rem; font-weight:600;">Entity-resolution role</td>
+  <td style="padding:0.5rem;">Great for "same entity, different spelling/typo"</td>
+  <td style="padding:0.5rem;">Great for "same intent, different words" — weaker on exact identifiers</td>
+</tr>
+</table>
+
+<p>
+This is exactly why Week 3 (RAG architecture) has a day on hybrid retrieval — BM25/trigram-style
+lexical matching plus embedding cosine similarity, run in parallel and merged. At 100M-row scale,
+you already know the operational cost of lexical matching (index size, query latency). The
+architect-level judgment call is: lexical catches what vector search structurally can't (exact
+SKU codes, part numbers, typos), and vector search catches what lexical structurally can't
+(synonyms, intent). Neither replaces the other — that's the "why hybrid over either alone"
+argument you'll want ready for interviews.
+</p>
+
+<h2>Decision rule</h2>
+<div class="example-box">
+<div class="label">When to use which</div>
+<ul>
+<li><strong>Cosine</strong> — default for text embeddings, always, unless you have a specific reason not to. This is what the model was trained against.</li>
+<li><strong>Dot product</strong> — fine as a drop-in for cosine <em>only if</em> your vectors are guaranteed unit-normalized (true for OpenAI's embeddings). Slight compute saving, same ranking.</li>
+<li><strong>Euclidean</strong> — rare for text. Shows up more in non-text embedding spaces (e.g. image feature vectors, clustering algorithms like k-means that are defined in terms of Euclidean distance) where magnitude is meaningful.</li>
+</ul>
+</div>
+
+<h2 style="margin-top:3.5rem; border-left-color: var(--ink);">Deep dive</h2>
+<p class="subtitle" style="margin-bottom:1.5rem;">Going one level further: the arithmetic by hand, what the index is actually doing with these metrics, and where this breaks in production.</p>
+
+<h3>1. Worked example by hand — where dot product and cosine actually disagree</h3>
+<p>
+The earlier example (<code>b = 2a</code>) showed dot product <em>inflating</em> a same-direction
+pair. That's the easy case. The more dangerous case is when dot product and cosine
+<strong>disagree on the ranking</strong> — not just the score, the actual order of "most similar."
+Here's a minimal example you can check with a calculator.
+</p>
+<p>Let <code>a = (3, 4)</code>, so <code>‖a‖ = 5</code>. Two candidates:</p>
+<ul>
+<li><code>Y = (3, 4)</code> — identical direction and magnitude to <code>a</code>. Perfect match.</li>
+<li><code>X = (2.4, 19.9)</code> — magnitude 20, but rotated 30° away from <code>a</code>'s direction.</li>
+</ul>
+<pre>dot(a, Y) = 3(3) + 4(4)      = 25
+dot(a, X) = 3(2.4) + 4(19.9) ≈ 86.8
+
+cos(a, Y) = 25 / (5 × 5)     = 1.000   ← perfect direction match
+cos(a, X) = 86.8 / (5 × 20)  ≈ 0.868   ← 30° off</pre>
+<p>
+By dot product, <code>X</code> beats <code>Y</code> more than 3-to-1 (86.8 vs 25) — it would rank
+first. By cosine, <code>Y</code> is the better match (1.000 vs 0.868), correctly, because it's the
+one actually pointing the same way. Dot product let <code>X</code>'s sheer size overrule the fact
+that it's the worse directional match. This is the failure mode in miniature — at embedding scale
+(1536 dimensions instead of 2), it's invisible in a debugger; it just shows up as "retrieval
+sometimes returns weird stuff" with no obvious cause.
+</p>
+
+<svg viewBox="0 0 400 300" style="width:100%; max-width:420px; display:block; margin:1.5rem auto; background:var(--code-bg); border-radius:8px;">
+  <line x1="60" y1="250" x2="380" y2="250" stroke="var(--rule)" stroke-width="1"/>
+  <line x1="60" y1="250" x2="60" y2="20" stroke="var(--rule)" stroke-width="1"/>
+  <text x="385" y="254" font-size="11" fill="var(--muted)" font-family="sans-serif">x</text>
+  <text x="45" y="20" font-size="11" fill="var(--muted)" font-family="sans-serif">y</text>
+
+  <!-- a = (3,4) scaled x20 -->
+  <line x1="60" y1="250" x2="120" y2="170" stroke="var(--ink)" stroke-width="2.5" marker-end="url(#arrowInk)"/>
+  <text x="126" y="168" font-size="13" fill="var(--ink)" font-family="sans-serif" font-weight="600">a (3,4)</text>
+
+  <!-- Y = same as a, drawn slightly offset for visibility, dashed -->
+  <line x1="60" y1="250" x2="118" y2="172" stroke="var(--good)" stroke-width="4" stroke-opacity="0.5" marker-end="url(#arrowGood)"/>
+  <text x="20" y="178" font-size="13" fill="var(--good)" font-family="sans-serif" font-weight="600">Y — identical dir.</text>
+
+  <!-- X = rotated 30 deg, magnitude 20 (scaled x8 for plot) -->
+  <line x1="60" y1="250" x2="79" y2="91" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arrowAccent)"/>
+  <text x="84" y="88" font-size="13" fill="var(--accent)" font-family="sans-serif" font-weight="600">X — 30° off, 4× longer</text>
+
+  <path d="M 90 210 A 40 40 0 0 0 78 179" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+  <text x="95" y="205" font-size="11" fill="var(--muted)" font-family="sans-serif">30°</text>
+
+  <defs>
+    <marker id="arrowInk" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ink)"/></marker>
+    <marker id="arrowGood" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--good)"/></marker>
+    <marker id="arrowAccent" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+  </defs>
+</svg>
+<p style="font-size:0.85rem; color:var(--muted); text-align:center; margin-top:-1rem;">Y overlaps a's direction exactly; X is rotated away but much longer. Dot product prefers X. Cosine correctly prefers Y.</p>
+
+<h3>2. What the index is actually doing with your chosen metric</h3>
+<p>
+Choosing a metric isn't just a query-time decision — pgvector <strong>builds the index around it</strong>,
+using one of two ANN (approximate nearest neighbor) algorithms:
+</p>
+
+<p><strong>IVFFlat</strong> — at build time, it runs k-means clustering on your vectors to carve
+the space into <code>lists</code> partitions (Voronoi cells), using your chosen metric as the
+clustering distance. At query time, it finds the <code>probes</code> nearest cluster centroids to
+your query vector, then does an exact distance scan only within those clusters. Fewer probes =
+faster but more likely to miss the true nearest neighbor sitting just across a cluster boundary.</p>
+
+<p><strong>HNSW</strong> — builds a multi-layer graph where each vector is a node connected to its
+approximate nearest neighbors (again, by your chosen metric). Search starts at a sparse top layer
+and greedily walks toward the query vector, dropping down a layer each time it can't get closer,
+until it reaches the bottom, densest layer. No clustering step, generally better recall/speed
+tradeoff than IVFFlat, at the cost of more expensive index builds and more memory.</p>
+
+<div class="example-box">
+<div class="label">The gotcha that matters at your scale</div>
+In pgvector, the index is built with an explicit operator class —
+<code>vector_cosine_ops</code>, <code>vector_l2_ops</code>, or <code>vector_ip_ops</code>. If that
+operator class doesn't match the operator in your query's <code>ORDER BY</code> clause
+(<code>&lt;=&gt;</code>, <code>&lt;-&gt;</code>, <code>&lt;#&gt;</code> respectively), Postgres
+<strong>silently ignores the index</strong> and falls back to a full sequential scan. No error.
+Correct results, wrong performance profile. At small data volumes you won't notice. At 100M rows —
+exactly the scale you've operated at with Elasticsearch — this is the difference between a
+50ms query and a query that times out. This is precisely the class of bug an experienced data
+engineer catches by habit (running <code>EXPLAIN ANALYZE</code>, checking for <code>Index Scan</code>
+vs <code>Seq Scan</code> in the plan) that a GenAI-only engineer often doesn't think to check.
+</div>
+
+<h3>3. Failure modes worth knowing before they bite you</h3>
+<ul>
+<li><strong>Operator/index mismatch</strong> (above) — the most common silent production bug.</li>
+<li><strong>Mixed normalization</strong> — if you ever blend vectors from different sources (a
+fine-tuned model, a manually pooled hidden state, a different provider) into the same index without
+verifying they're all unit-normalized, cosine distance is still safe (it normalizes per-pair at
+query time) but <code>&lt;#&gt;</code> silently stops being equivalent to cosine and starts
+rewarding whichever source happens to produce larger-magnitude vectors.</li>
+<li><strong>Concentration of measure in high dimensions</strong> — with hundreds or thousands of
+dimensions, pairwise cosine similarities for unrelated items tend to compress into a narrower band
+than intuition from 2D/3D suggests. A cosine score of 0.75 can mean very different things depending
+on the embedding model and dimensionality — it's not a portable, calibrated "percent similar."</li>
+<li><strong>Fixed similarity thresholds don't transfer across models</strong> — "only return
+results above cosine 0.8" tuned for one embedding model will silently misbehave if you swap
+embedding models or providers later, since the score distribution shifts. Threshold tuning is
+per-model, not universal — this is part of why Week 3's RAG eval day (RAGAS) matters: measuring
+retrieval quality empirically beats trusting a raw cosine cutoff.</li>
+</ul>
+
+<h2>Real run — the actual numbers</h2>
+<p>
+The worked example above was hypothetical. Here's what <code>text-embedding-3-small</code>
+actually returned for the 3 sentences:
+</p>
+<table style="width:100%; border-collapse:collapse; margin:1.5rem 0; font-family:-apple-system,sans-serif; font-size:0.92rem;">
+<tr style="border-bottom:2px solid var(--ink);">
+  <th style="text-align:left; padding:0.5rem;">pair</th>
+  <th style="text-align:left; padding:0.5rem;">cosine</th>
+  <th style="text-align:left; padding:0.5rem;">dot</th>
+  <th style="text-align:left; padding:0.5rem;">euclidean</th>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.5rem;">A,B — paraphrases</td>
+  <td style="padding:0.5rem;">0.632</td>
+  <td style="padding:0.5rem;">0.632</td>
+  <td style="padding:0.5rem;">0.858</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.5rem;">A,C — unrelated</td>
+  <td style="padding:0.5rem;">0.155</td>
+  <td style="padding:0.5rem;">0.155</td>
+  <td style="padding:0.5rem;">1.299</td>
+</tr>
+<tr>
+  <td style="padding:0.5rem;">B,C — unrelated</td>
+  <td style="padding:0.5rem;">0.161</td>
+  <td style="padding:0.5rem;">0.161</td>
+  <td style="padding:0.5rem;">1.295</td>
+</tr>
+</table>
+<p>
+Two things worth internalizing here. First, cosine and dot product agree to 3 decimals on every
+row — the unit-normalization claim from earlier in this lesson, now confirmed empirically instead
+of just asserted. Second: the paraphrase pair only scored 0.632, not the 0.75–0.90 you might
+expect for "same meaning, different words." <strong>Absolute cosine values are less informative
+than the gap between related and unrelated pairs</strong> — 0.632 vs ~0.16 is a clean ~4x
+separation, and that separation, not the raw number, is the actual retrieval signal. Don't
+eyeball a single cosine score and judge it "high" or "low" in isolation; judge it against the
+score for something you know is unrelated.
+</p>
+
+<h2>Visualize it</h2>
+<p>
+Numbers in a table are convincing, but a plot makes the "direction is what matters" idea visceral.
+A 3-sentence example projects cleanly to 2D: reduce the 1536-dimension vectors down using PCA and
+MDS, plot each sentence as a vector from the origin, and look at how far apart the arrowheads land.
+</p>
+<div class="example-box">
+<div class="label">PCA vs MDS — pick the one that matches your question</div>
+These are not interchangeable projections. <strong>PCA</strong> finds the 2 directions that
+capture the most variance across your whole dataset — it doesn't explicitly try to preserve
+pairwise distances, so a PCA plot's dot-to-dot distances are a byproduct, not a guarantee.
+<strong>MDS</strong> is built differently: its objective function directly minimizes distortion of
+pairwise distances when squashing into 2D. If the question you're asking the plot is
+<em>"does closer-together mean more similar?"</em> — MDS is the one actually optimized to answer
+that; PCA is answering a different question ("where's the variance?") that often, but not always,
+correlates with the same answer.
+</div>
+<p>
+Script: <code>day2_visualize_embeddings.py</code> (companion file to this lesson) — fetches the 3
+sentence embeddings, projects with both PCA and MDS, and saves annotated scatter plots showing
+each vector drawn from the origin with pairwise distances labeled on the connecting lines. Same
+pattern as the distance-metrics script: run it in your own environment, since it needs your
+OpenAI key and matplotlib/scikit-learn.
+</p>
+
+<h2>What happens when the model changes underneath you</h2>
+<p>
+Worth stating plainly, since it's the kind of thing that bites in production and not in a demo:
+old-model and new-model embeddings are not comparable, even at the same dimensionality — a model
+upgrade is a different coordinate system, not a drop-in replacement. Swapping models under a live
+index without a full re-embed produces a silently mixed-version index: relevance degrades
+inconsistently depending which document a query happens to land near, with no error raised
+anywhere. The correct move is a full backfill into a new index, quality-validated (RAGAS, Week 3)
+before cutover, with the model name/version stored as a column on every vector row so a
+partially-migrated index is detectable rather than invisible. File this next to the operator-class
+mismatch from earlier — same shape of bug, different cause.
+</p>
+
+<h2>Apply it to your agent</h2>
+<p>
+pgvector supports all three as index/query operators: <code>&lt;-&gt;</code> (L2), <code>&lt;#&gt;</code>
+(negative inner product), <code>&lt;=&gt;</code> (cosine distance). Open your agent's retrieval
+query and check which operator you're actually using. If it's <code>&lt;=&gt;</code>, you're
+already doing the right thing by default. If it's <code>&lt;#&gt;</code>, confirm your embeddings
+are unit-normalized (OpenAI's are) — worth stating explicitly in your justification doc as a
+deliberate choice, not an accident.
+</p>
+
+<div class="quiz">
+<div class="q">Check yourself:</div>
+<div id="q1">
+<p>Two vectors point in exactly the same direction, but vector B has 3× the magnitude of vector A. Which metric reports them as most similar?</p>
+<button onclick="answer(this,'q1',false)">Euclidean distance</button>
+<button onclick="answer(this,'q1',false)">Dot product</button>
+<button onclick="answer(this,'q1',true)">Cosine similarity</button>
+<div class="feedback" id="q1-fb"></div>
+</div>
+</div>
+
+<div class="quiz">
+<div id="q2">
+<p>Your agent's embeddings are all unit-normalized. You swap the pgvector operator from cosine distance to negative inner product. What happens to your ranking?</p>
+<button onclick="answer(this,'q2',false)">Rankings shift because dot product ignores direction</button>
+<button onclick="answer(this,'q2',true)">Rankings stay identical — normalization makes them equivalent</button>
+<button onclick="answer(this,'q2',false)">Rankings become random</button>
+<div class="feedback" id="q2-fb"></div>
+</div>
+</div>
+
+<div class="quiz">
+<div id="q3">
+<p>Which retrieval need is cosine-on-embeddings structurally worst at, compared to trigram/lexical matching?</p>
+<button onclick="answer(this,'q3',false)">Matching synonyms like "sneakers" and "trainers"</button>
+<button onclick="answer(this,'q3',true)">Distinguishing exact SKU codes that differ by one character</button>
+<button onclick="answer(this,'q3',false)">Matching paraphrased product descriptions</button>
+<div class="feedback" id="q3-fb"></div>
+</div>
+</div>
+
+<div class="quiz">
+<div id="q4">
+<p>In the worked example, vector X (30° off, magnitude 20) beats vector Y (identical direction, magnitude 5) on dot product but loses on cosine. Why does this happen?</p>
+<button onclick="answer(this,'q4',false)">Cosine is always larger than dot product by definition</button>
+<button onclick="answer(this,'q4',true)">Dot product lets X's larger magnitude outweigh its worse directional match</button>
+<button onclick="answer(this,'q4',false)">X and Y are actually pointing the same direction</button>
+<div class="feedback" id="q4-fb"></div>
+</div>
+</div>
+
+<div class="quiz">
+<div id="q5">
+<p>You build a pgvector HNSW index with <code>vector_l2_ops</code>, but your query's ORDER BY uses <code>&lt;=&gt;</code> (cosine distance). What happens?</p>
+<button onclick="answer(this,'q5',false)">Postgres throws an error and refuses to run the query</button>
+<button onclick="answer(this,'q5',true)">The query still returns correct results but silently falls back to a full sequential scan</button>
+<button onclick="answer(this,'q5',false)">Postgres automatically rebuilds the index with the matching operator</button>
+<div class="feedback" id="q5-fb"></div>
+</div>
+</div>
+
+<div class="primary-source">
+<strong>Primary source:</strong> Pinecone's
+<a href="https://www.pinecone.io/learn/vector-similarity/" target="_blank">"Vector Similarity Explained"</a>
+covers all three metrics with the geometric intuition side by side. For the pgvector-specific
+operators, the <a href="https://github.com/pgvector/pgvector" target="_blank">pgvector README</a>
+documents <code>&lt;-&gt;</code>, <code>&lt;#&gt;</code>, and <code>&lt;=&gt;</code> directly —
+worth reading once, since it's the exact syntax you'll use in your agent. For the index-internals
+section, the pgvector README's own
+<a href="https://github.com/pgvector/pgvector#indexing" target="_blank">indexing section</a>
+covers IVFFlat vs HNSW tradeoffs and the operator-class requirement directly from the source.
+</div>
+
+<p class="ask-agent">Something unclear? Ask your agent (me) — I'm your teacher for this workspace.</p>
+
+<div class="nav">
+<span>← <a href="./0001-what-is-an-embedding.html">0001: What an Embedding Is</a></span>
+<span><a href="./day2_visualize_embeddings.py">Visualization script</a> · <a href="../learning-records/0002-distance-metrics.md">Learning record →</a></span>
+</div>
+
+<script>
+function answer(btn, group, correct) {
+  const container = document.getElementById(group);
+  const buttons = container.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  btn.classList.add(correct ? 'correct' : 'incorrect');
+  const fb = document.getElementById(group + '-fb');
+  fb.style.display = 'block';
+  fb.textContent = correct
+    ? 'Correct.'
+    : 'Not quite — check the reasoning above and try the next one.';
+}
+</script>
+
+</body>
+</html>

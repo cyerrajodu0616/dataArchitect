@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0004 — Fine-Tuning Embeddings vs Off-The-Shelf</title>
+<link rel="stylesheet" href="../assets/lesson-style.css">
+<style>
+  /* ── Code Tab System (same as Day 3) ─────────────────────────── */
+  .code-tabs { margin: 2rem 0; border: 1px solid #e2ded8; border-radius: 10px; overflow: hidden; }
+  .code-tab-btns { display: flex; background: #f4f2ee; border-bottom: 1px solid #e2ded8; }
+  .code-tab-btn {
+    flex: 1; padding: 0.75rem 1rem; border: none; background: none; cursor: pointer;
+    font-size: 0.82rem; font-weight: 600; color: #666; border-right: 1px solid #e2ded8;
+    transition: background 0.2s, color 0.2s;
+  }
+  .code-tab-btn:last-child { border-right: none; }
+  .code-tab-btn.active { background: #fff; color: #c8602a; border-bottom: 2px solid #c8602a; }
+  .code-tab-pane { display: none; }
+  .code-tab-pane.active { display: block; }
+  .code-pane-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.6rem 1.2rem; background: #1e1e2e; border-bottom: 1px solid #333;
+  }
+  .code-pane-header span { color: #888; font-size: 0.8rem; font-family: monospace; }
+  .copy-btn {
+    background: #333; color: #ccc; border: 1px solid #555; border-radius: 4px;
+    padding: 0.25rem 0.7rem; font-size: 0.75rem; cursor: pointer; transition: background 0.2s;
+  }
+  .copy-btn:hover { background: #555; color: #fff; }
+  .code-tabs pre {
+    margin: 0; padding: 1.2rem 1.4rem; background: #1e1e2e; color: #cdd6f4;
+    font-size: 0.78rem; line-height: 1.65; overflow-x: auto; border-radius: 0; white-space: pre;
+  }
+  .code-tabs code { font-family: "Fira Code", "Cascadia Code", monospace; }
+  .code-run-tip {
+    padding: 0.65rem 1.2rem; background: #0d1117; border-top: 1px solid #333;
+    font-size: 0.78rem; color: #7ec8a4; font-family: monospace;
+  }
+  /* ── Decision matrix table ─────────────────────────────────────── */
+  .matrix-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.88rem; }
+  .matrix-table th { background: #1f5f8b; color: #fff; padding: 10px 14px; text-align: left; }
+  .matrix-table td { padding: 9px 14px; border: 1px solid #e2ded8; vertical-align: top; }
+  .matrix-table tr:nth-child(even) td { background: #f9f7f4; }
+  .tag-do   { background: #d4edda; color: #155724; padding: 2px 7px; border-radius: 4px; font-size: 0.78rem; font-weight: 700; }
+  .tag-skip { background: #f8d7da; color: #721c24; padding: 2px 7px; border-radius: 4px; font-size: 0.78rem; font-weight: 700; }
+  .tag-try  { background: #fff3cd; color: #856404; padding: 2px 7px; border-radius: 4px; font-size: 0.78rem; font-weight: 700; }
+  /* ── Math callout ──────────────────────────────────────────────── */
+  .math-box {
+    text-align: center; font-weight: bold; background: #f4f2ee;
+    padding: 1rem; border-radius: 8px; margin: 1rem 0;
+    border-left: 4px solid #1f5f8b; font-size: 1.05rem;
+  }
+  /* ── Collapsible sections ──────────────────────────────────────── */
+  details { border: 1px solid #e2ded8; border-radius: 8px; margin: 1rem 0; }
+  details summary {
+    padding: 0.75rem 1rem; cursor: pointer; font-weight: 700;
+    background: #f4f2ee; border-radius: 7px; list-style: none;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: "▶ "; font-size: 0.75rem; color: #c8602a; }
+  details[open] summary::before { content: "▼ "; }
+  details .details-body { padding: 1rem 1.2rem; }
+  /* ── Pipeline flow ──────────────────────────────────────────────── */
+  .pipeline {
+    display: flex; align-items: center; gap: 0; margin: 1.5rem 0;
+    flex-wrap: wrap;
+  }
+  .pipeline-step {
+    flex: 1; min-width: 120px; text-align: center;
+    background: #1f5f8b; color: #fff;
+    padding: 0.7rem 0.5rem; font-size: 0.78rem; font-weight: 700;
+    border-radius: 6px; position: relative;
+  }
+  .pipeline-step.green  { background: #2e6b3e; }
+  .pipeline-step.orange { background: #c8602a; }
+  .pipeline-step.purple { background: #6a3fa0; }
+  .pipeline-arrow {
+    font-size: 1.4rem; color: #999; padding: 0 4px; flex-shrink: 0;
+  }
+  .pipeline-sub { font-size: 0.68rem; font-weight: 400; opacity: 0.85; margin-top: 3px; }
+</style>
+</head>
+<body>
+
+<h1>Fine-Tuning Embeddings vs Off-The-Shelf</h1>
+<p class="subtitle">Week 1, Day 4 — contrastive loss, MNRLoss, hard negatives, hybrid search BM25, BEIR benchmarks, ROI decision</p>
+
+<p>So far, embedding models have been black boxes. Today we open the lid: how are the weights <em>actually</em> adjusted during fine-tuning, what loss functions drive it, and when is the entire exercise a costly detour compared to a well-tuned hybrid retrieval stack?</p>
+
+<div class="retail-tag">Retail framing</div>
+<div class="example-box">
+<div class="label">Core Tension</div>
+A retailer's search team is getting complaints that "work boots with steel toe" returns "Workwear Steel Blue Denim Jeans" as a top hit. Three engineers propose three solutions:
+<ol>
+  <li><strong>Engineer A:</strong> Fine-tune BGE on our click-through logs (6 weeks of MLOps work).</li>
+  <li><strong>Engineer B:</strong> Add BM25 keyword layer + reranker (3 days of work).</li>
+  <li><strong>Engineer C:</strong> Bump to a larger embedding model.</li>
+</ol>
+By the end of today you'll know exactly which engineer is right and why.
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>1. What "Fine-Tuning" an Embedding Model Actually Does to Weights</h2>
+
+<p>Fine-tuning is <strong>not</strong> LLM instruction fine-tuning. There is no chat template, no RLHF, no system prompt. Instead, you are adjusting the <strong>attention weight matrices</strong> (Q, K, V projections in every transformer layer) using a <em>contrastive signal</em>: pairs of texts that <em>should</em> be close, and pairs that <em>should</em> be far. The loss function measures the violation of that geometric requirement and back-propagates gradients into the weights to fix it.</p>
+
+<svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="720" height="260" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="22" y="28" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">CONTRASTIVE LOSS TRAINING — WEIGHT UPDATE LOOP</text>
+
+  <!-- Step boxes -->
+  <rect x="20"  y="50" width="130" height="55" rx="6" fill="#1f5f8b"/>
+  <text x="85"  y="74"  font-family="-apple-system,sans-serif" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">Query Text</text>
+  <text x="85"  y="90"  font-family="-apple-system,sans-serif" font-size="10" fill="#d0e3f7" text-anchor="middle">"steel toe work boots"</text>
+
+  <rect x="20"  y="155" width="130" height="55" rx="6" fill="#2e6b3e"/>
+  <text x="85"  y="179" font-family="-apple-system,sans-serif" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">Positive Doc</text>
+  <text x="85"  y="195" font-family="-apple-system,sans-serif" font-size="10" fill="#e6f4ea" text-anchor="middle">SKU-9921 Heavy Boot</text>
+
+  <!-- Transformer box -->
+  <rect x="200" y="60"  width="140" height="140" rx="8" fill="#1e1e2e"/>
+  <text x="270" y="120" font-family="-apple-system,sans-serif" font-size="12" fill="#cdd6f4" text-anchor="middle" font-weight="700">Transformer</text>
+  <text x="270" y="138" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086" text-anchor="middle">Q, K, V weights</text>
+  <text x="270" y="153" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086" text-anchor="middle">being updated</text>
+  <text x="270" y="168" font-family="-apple-system,sans-serif" font-size="10" fill="#cba6f7" text-anchor="middle">Wq, Wk, Wv ← Δ</text>
+
+  <!-- Arrows from texts to transformer -->
+  <path d="M 150 77 L 200 100" stroke="#89b4fa" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 150 182 L 200 160" stroke="#a6e3a1" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- Embedding outputs -->
+  <rect x="390" y="60"  width="110" height="45" rx="6" fill="#1f5f8b" opacity="0.8"/>
+  <text x="445" y="79"  font-family="-apple-system,sans-serif" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">v_query</text>
+  <text x="445" y="95"  font-family="-apple-system,sans-serif" font-size="10" fill="#d0e3f7" text-anchor="middle">768-dim vector</text>
+
+  <rect x="390" y="155" width="110" height="45" rx="6" fill="#2e6b3e" opacity="0.8"/>
+  <text x="445" y="174" font-family="-apple-system,sans-serif" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">v_positive</text>
+  <text x="445" y="190" font-family="-apple-system,sans-serif" font-size="10" fill="#e6f4ea" text-anchor="middle">768-dim vector</text>
+
+  <path d="M 340 100 L 390 82" stroke="#89b4fa" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 340 160 L 390 178" stroke="#a6e3a1" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- Loss box -->
+  <rect x="550" y="100" width="145" height="60" rx="6" fill="#a8451f"/>
+  <text x="622" y="122" font-family="-apple-system,sans-serif" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">MNRLoss</text>
+  <text x="622" y="140" font-family="-apple-system,sans-serif" font-size="10" fill="#fce8e6" text-anchor="middle">-log(sim(q,p)/Σ sim(q,n))</text>
+  <text x="622" y="155" font-family="-apple-system,sans-serif" font-size="10" fill="#fce8e6" text-anchor="middle">→ backprop gradient</text>
+
+  <path d="M 500 82 L 550 120" stroke="#89b4fa" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 500 178 L 550 140" stroke="#a6e3a1" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- backprop arrow -->
+  <path d="M 695 130 Q 710 240 270 220 Q 235 210 240 200" stroke="#fab387" stroke-width="1.8" fill="none" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+  <text x="580" y="240" font-family="-apple-system,sans-serif" font-size="10" fill="#fab387" font-weight="600">∇L backpropagates through Wq, Wk, Wv</text>
+
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#888"/>
+    </marker>
+  </defs>
+</svg>
+
+<details>
+<summary>Deep Dive: What exactly changes in the transformer weights?</summary>
+<div class="details-body">
+<p>A standard BERT-style transformer has 12 layers. Each layer contains 3 projection matrices:</p>
+<ul>
+  <li><strong>W<sub>Q</sub></strong> — maps a token's hidden state → query vector for attention</li>
+  <li><strong>W<sub>K</sub></strong> — maps a token's hidden state → key vector for attention</li>
+  <li><strong>W<sub>V</sub></strong> — maps a token's hidden state → value vector for attention</li>
+</ul>
+<p>During fine-tuning on contrastive pairs, the gradient <code>∇L</code> propagates back through the pooling operation (mean of all token hidden states → sentence vector) and then through all these weight matrices. The result: domain-specific terms ("steel toe", "SKU-9921") get more distinctive activation patterns relative to superficially similar but irrelevant tokens ("steel blue denim").</p>
+<p><strong>Key point for architects:</strong> You are <em>not</em> adding new knowledge. You are reshaping the geometry of the existing embedding space so that your domain's proximity relationships are better preserved. The model still can't understand tokens it never saw during pre-training unless you also expand the tokenizer vocabulary.</p>
+</div>
+</details>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>2. Loss Functions: Triplet Loss vs MNRLoss vs Contrastive Loss</h2>
+
+<p>Three loss functions dominate embedding fine-tuning. They differ in <em>how many negatives</em> they use per gradient step and how efficiently they pack information.</p>
+
+<h3>2a. Classic Triplet Loss</h3>
+<p>Given a triplet <code>(Anchor, Positive, Negative)</code>, the loss enforces a margin <code>m</code>:</p>
+<div class="math-box">
+  ℒ<sub>triplet</sub> = max(0,  d(A, P) − d(A, N) + m)
+</div>
+<ul>
+  <li><code>d(A, P)</code> = distance from anchor to positive (want small)</li>
+  <li><code>d(A, N)</code> = distance from anchor to negative (want large)</li>
+  <li><code>m</code> = margin hyper-parameter (typically 0.2–0.5)</li>
+  <li><strong>Weakness:</strong> One negative per step. Requires careful curation of "hard" negative examples or training stalls early (gradient ≈ 0 when easy negatives are already separated far enough).</li>
+</ul>
+
+<h3>2b. MultipleNegativesRankingLoss (MNRLoss) — the industry standard</h3>
+<p>Also called <strong>in-batch negatives</strong>. Every other positive in the training batch becomes a negative for the current query. With batch size B = 64, you get 63 free negatives per query:</p>
+<div class="math-box">
+  ℒ<sub>MNR</sub> = −log  <span style="font-size:1.3em;">&#x2211;</span>  exp(sim(q, p<sub>i</sub>)) / <span style="font-size:1.3em;">&#x2211;</span><sub>j</sub> exp(sim(q, p<sub>j</sub>))
+</div>
+<p>This is essentially <strong>cross-entropy over a soft-max of similarities</strong> within the batch. Why is it better than triplet loss?</p>
+<ul>
+  <li><strong>Sample efficiency:</strong> Batch of 64 → 64 × 63 = 4,032 implicit (query, negative) pairs per step vs. 64 explicit triplets.</li>
+  <li><strong>No margin hyper-parameter</strong> to tune.</li>
+  <li><strong>Naturally calibrated</strong> — the model learns a relative ranking, not just a binary separated/not-separated decision.</li>
+</ul>
+
+<h3>2c. Contrastive Loss (Siamese)</h3>
+<div class="math-box">
+  ℒ<sub>contrastive</sub> = y · d² + (1 − y) · max(0, m − d)²
+</div>
+<p>Where <code>y = 1</code> for positive pairs and <code>y = 0</code> for negatives. Used in older Siamese networks. Rarely preferred for text now because MNRLoss dominates on BEIR benchmarks.</p>
+
+<div class="example-box">
+<div class="label">Retail Training Pair Examples</div>
+<table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+  <tr style="background:#f4f2ee;">
+    <th style="padding:8px; border:1px solid #ddd;">Query (Anchor)</th>
+    <th style="padding:8px; border:1px solid #ddd;">Positive Doc</th>
+    <th style="padding:8px; border:1px solid #ddd;">Hard Negative (looks similar, isn't)</th>
+  </tr>
+  <tr>
+    <td style="padding:8px; border:1px solid #ddd;">"steel toe work boots"</td>
+    <td style="padding:8px; border:1px solid #ddd;">SKU-9921 Heavy Duty Steel Toe Boot</td>
+    <td style="padding:8px; border:1px solid #ddd;">Steel Blue Workwear Denim Jeans</td>
+  </tr>
+  <tr>
+    <td style="padding:8px; border:1px solid #ddd;">"30-day return shoes"</td>
+    <td style="padding:8px; border:1px solid #ddd;">Footwear Return Policy: 30-day full refund</td>
+    <td style="padding:8px; border:1px solid #ddd;">30-day extended warranty plan for electronics</td>
+  </tr>
+  <tr>
+    <td style="padding:8px; border:1px solid #ddd;">"kids size 8 sneakers"</td>
+    <td style="padding:8px; border:1px solid #ddd;">Children's Running Shoes – US Size 8K</td>
+    <td style="padding:8px; border:1px solid #ddd;">Women's Lifestyle Sneaker – US Size 8</td>
+  </tr>
+</table>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>3. Hard Negative Mining — The Difference Between Good and Great Fine-Tuning</h2>
+
+<p><strong>Easy negatives</strong>: "steel toe boots" vs. "stainless steel saucepan" — any model will rank these apart. Gradient signal is near zero. Training stalls.</p>
+
+<p><strong>Hard negatives</strong>: "steel toe boots" vs. "steel blue work jeans" — lexically very similar, semantically different. Maximum gradient signal. This is where the model actually learns.</p>
+
+<h3>Hard Negative Mining Strategy</h3>
+<div class="pipeline">
+  <div class="pipeline-step">1. Run BM25<br><div class="pipeline-sub">Get top-100 keyword matches for each query</div></div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step green">2. Embed + Score<br><div class="pipeline-sub">Bi-encoder cosine scores for top-100</div></div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step orange">3. Filter<br><div class="pipeline-sub">High BM25, low cosine = hard negative</div></div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step purple">4. Train<br><div class="pipeline-sub">MNRLoss on (query, positive, hard_neg)</div></div>
+</div>
+
+<p>This approach (called <strong>ANCE</strong> — Approximate Nearest Neighbor Negative Contrastive Estimation) typically yields a <strong>3–8% nDCG@10 improvement</strong> over random negatives on domain datasets.</p>
+
+<details>
+<summary>Why does easy negative training produce degenerate embeddings?</summary>
+<div class="details-body">
+<p>Consider the loss gradient for a very easy negative — an example where the model already separates the anchor and negative by a large margin. The gradient contribution from that pair is approximately <strong>0</strong> because the softmax denominator is dominated by the positive term. The optimizer sees nothing useful and makes trivially small parameter updates.</p>
+<p>Over thousands of steps, the embedding space collapses toward a configuration that satisfies the easy negatives but fails to learn fine-grained semantic distinctions. This is called <strong>dimensional collapse</strong> — a pathology where the effective dimensionality of the embedding space shrinks to far fewer useful dimensions than the model has capacity for.</p>
+<p><strong>Mitigation strategies:</strong></p>
+<ul>
+  <li>Large batch sizes (≥128) to increase in-batch hard negative density.</li>
+  <li>ANN-based hard negative retrieval (ANCE).</li>
+  <li>Temperature scaling on the softmax (τ ≈ 0.05–0.1) to sharpen the contrastive signal.</li>
+</ul>
+</div>
+</details>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>4. Hybrid Search (BM25 + Dense Vector) — The Engineer B Solution</h2>
+
+<p>Before touching model weights, the standard production move is <strong>Hybrid Search</strong>: combining an inverted-index keyword scorer (BM25) with a dense vector similarity scorer. This handles the common failure mode of domain-specific exact strings (SKUs, part numbers, brand names) that off-the-shelf embedding models struggle with.</p>
+
+<h3>4a. How BM25 Works (The Physics)</h3>
+<p>BM25 (Best Match 25) is a probabilistic retrieval function. For query term <code>t</code> in document <code>d</code>:</p>
+<div class="math-box">
+  BM25(t, d) = IDF(t) × <span style="font-size:1.1em;">TF(t,d) × (k₁ + 1)</span> / <span style="font-size:1.1em;">TF(t,d) + k₁ × (1 − b + b × |d| / avgdl)</span>
+</div>
+<ul>
+  <li><strong>IDF(t)</strong> = Inverse Document Frequency — rare terms score higher (e.g., "SKU-9921" appears in 1 doc → high IDF). This is the key reason BM25 is great for part numbers.</li>
+  <li><strong>TF(t,d)</strong> = Term Frequency in document <code>d</code></li>
+  <li><strong>k₁</strong> ≈ 1.2–2.0: saturation constant (prevents super-frequent terms from dominating)</li>
+  <li><strong>b</strong> ≈ 0.75: length normalization (long documents don't automatically win)</li>
+  <li><strong>avgdl</strong> = average document length across corpus</li>
+</ul>
+<p><strong>Why BM25 alone fails for semantic search:</strong> "comfortable shoe" and "footwear that reduces fatigue" have zero token overlap. BM25 score = 0. Dense vector search scores them high because it maps to the same semantic neighborhood.</p>
+
+<h3>4b. Reciprocal Rank Fusion (RRF) — Combining BM25 + Dense Scores</h3>
+<p>You cannot simply add BM25 and cosine scores — they have incompatible scales (BM25 is unbounded; cosine is [−1, 1]). The standard production solution is <strong>Reciprocal Rank Fusion</strong>:</p>
+<div class="math-box">
+  RRF_score(d) = 1/(k + rank_BM25(d))  +  1/(k + rank_dense(d))
+</div>
+<p><code>k</code> = 60 (empirically stable default). You add the reciprocal of each system's rank. A document that is #1 in both lists gets 1/61 + 1/61 ≈ 0.033 — the highest possible score. Rank-based fusion is <strong>scale-invariant</strong> — no normalization needed.</p>
+
+<div class="example-box">
+<div class="label">Retail Hybrid Search — Why It Beats Fine-Tuning for SKU Lookups</div>
+<table style="width:100%; font-size:0.83rem; border-collapse:collapse;">
+  <tr style="background:#f4f2ee;">
+    <th style="padding:8px; border:1px solid #ddd;">Query</th>
+    <th style="padding:8px; border:1px solid #ddd;">BM25 Top-1</th>
+    <th style="padding:8px; border:1px solid #ddd;">Dense Top-1</th>
+    <th style="padding:8px; border:1px solid #ddd;">RRF Fused Top-1</th>
+  </tr>
+  <tr>
+    <td style="padding:8px; border:1px solid #ddd;">"SKU-9921-ST"</td>
+    <td style="padding:8px; border:1px solid #ddd;">✅ SKU-9921 Steel Toe Boot</td>
+    <td style="padding:8px; border:1px solid #ddd;">❌ Generic work boot (no SKU match)</td>
+    <td style="padding:8px; border:1px solid #ddd;">✅ SKU-9921 (BM25 rank boost wins)</td>
+  </tr>
+  <tr>
+    <td style="padding:8px; border:1px solid #ddd;">"comfortable footwear reduces fatigue"</td>
+    <td style="padding:8px; border:1px solid #ddd;">❌ 0 matches (zero-overlap query)</td>
+    <td style="padding:8px; border:1px solid #ddd;">✅ Cushioned Insole Work Boot</td>
+    <td style="padding:8px; border:1px solid #ddd;">✅ Cushioned Insole (dense rank wins)</td>
+  </tr>
+  <tr>
+    <td style="padding:8px; border:1px solid #ddd;">"steel toe boots for work"</td>
+    <td style="padding:8px; border:1px solid #ddd;">⚠️ Steel Blue Denim Jeans (overlap on "steel")</td>
+    <td style="padding:8px; border:1px solid #ddd;">⚠️ Steel Toe Boot (good but weak)</td>
+    <td style="padding:8px; border:1px solid #ddd;">✅ Steel Toe Boot (dense rank + partial BM25)</td>
+  </tr>
+</table>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>5. BEIR Benchmark — How to Objectively Measure "Should I Fine-Tune?"</h2>
+
+<p>The <strong>BEIR benchmark</strong> (Benchmarking IR) is the industry-standard suite of 18 heterogeneous retrieval datasets. The primary metric is <strong>nDCG@10</strong> (Normalized Discounted Cumulative Gain at rank 10):</p>
+<div class="math-box">
+  nDCG@10 = DCG@10 / IDCG@10 &nbsp;&nbsp; where &nbsp;&nbsp; DCG@10 = Σ<sub>i=1..10</sub> rel<sub>i</sub> / log₂(i+1)
+</div>
+<p>Relevance <code>rel_i</code> is graded (0, 1, 2). A perfect ranking gets nDCG@10 = 1.0. Random gets ~0.1.</p>
+
+<h3>Practical Measurement Workflow</h3>
+<div class="pipeline">
+  <div class="pipeline-step">1. Baseline<br><div class="pipeline-sub">Run off-the-shelf model on your domain test set, measure nDCG@10</div></div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step green">2. Hybrid BM25<br><div class="pipeline-sub">Add RRF. Measure improvement. Often +5–15%</div></div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step orange">3. Reranker<br><div class="pipeline-sub">Add cross-encoder. Often +8–20% on top of hybrid</div></div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step purple">4. Fine-tune only if gap remains >5% nDCG<br><div class="pipeline-sub">And you have ≥10K training pairs + GPU infra</div></div>
+</div>
+
+<table class="matrix-table">
+  <tr>
+    <th>Model Strategy</th>
+    <th>Typical nDCG@10 on Retail Domain</th>
+    <th>Setup Time</th>
+    <th>Ongoing MLOps Cost</th>
+  </tr>
+  <tr>
+    <td>Off-the-shelf embedding (baseline)</td>
+    <td>0.55–0.65</td>
+    <td>1 day</td>
+    <td>Minimal</td>
+  </tr>
+  <tr>
+    <td>+ BM25 hybrid (RRF)</td>
+    <td>0.62–0.72 (+7–12%)</td>
+    <td>2–3 days</td>
+    <td>Low (Elasticsearch/OpenSearch index)</td>
+  </tr>
+  <tr>
+    <td>+ Cross-encoder reranker</td>
+    <td>0.70–0.80 (+15–25%)</td>
+    <td>3–5 days</td>
+    <td>Medium (GPU for inference)</td>
+  </tr>
+  <tr>
+    <td>Fine-tuned domain embedding (with hard negatives)</td>
+    <td>0.78–0.87 (+20–35%)</td>
+    <td>4–8 weeks</td>
+    <td>High (training pipeline, eval, versioning, drift monitoring)</td>
+  </tr>
+</table>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>6. The Fine-Tuning Data Pipeline — What You Actually Need</h2>
+
+<p>Fine-tuning is only as good as its training data. The minimum viable dataset for domain embedding fine-tuning:</p>
+
+<ul>
+  <li><strong>≥10,000 (query, positive_document) pairs</strong> — below this, validation curves are noisy and results are unreliable.</li>
+  <li><strong>Source of truth for positives:</strong> click-through logs (user clicked → purchased = strong positive), expert annotations, or query-to-FAQ mappings.</li>
+  <li><strong>Hard negatives:</strong> generated via BM25 retrieval (high BM25 rank but explicitly not-purchased/not-relevant).</li>
+</ul>
+
+<h3>Retail Data Sources for Training Pairs</h3>
+<table class="matrix-table">
+  <tr>
+    <th>Data Source</th>
+    <th>Signal Quality</th>
+    <th>Availability</th>
+    <th>Note</th>
+  </tr>
+  <tr>
+    <td>Search click-through logs</td>
+    <td>🟢 High</td>
+    <td>Medium (needs logging infrastructure)</td>
+    <td>Biased toward popular items — apply debiasing</td>
+  </tr>
+  <tr>
+    <td>Add-to-cart events</td>
+    <td>🟢 Very High</td>
+    <td>Low (less data volume)</td>
+    <td>Strongest signal for purchase intent queries</td>
+  </tr>
+  <tr>
+    <td>Human annotations (Appen/Scale)</td>
+    <td>🟢 Very High</td>
+    <td>Low ($2–5/pair)</td>
+    <td>Required for edge cases and rare SKU categories</td>
+  </tr>
+  <tr>
+    <td>Synthetic pairs (GPT-4o generation)</td>
+    <td>🟡 Medium</td>
+    <td>High (cheap at scale)</td>
+    <td>Good for cold-start; dilute with real data &gt;50%</td>
+  </tr>
+  <tr>
+    <td>Product metadata joins</td>
+    <td>🟡 Medium</td>
+    <td>High (existing catalog)</td>
+    <td>Category/attribute label → query mapping</td>
+  </tr>
+</table>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>7. MLOps Cost of Maintaining Fine-Tuned Embeddings</h2>
+
+<p>Fine-tuning is not a one-time event. It creates an ongoing maintenance obligation that most teams underestimate.</p>
+
+<details>
+<summary>Full MLOps burden list — click to expand</summary>
+<div class="details-body">
+<ul>
+  <li><strong>Catalog drift:</strong> New SKUs/categories added. If new product language isn't in fine-tune training data, model reverts to off-the-shelf performance for those items.</li>
+  <li><strong>Query distribution shift:</strong> Seasonal trends ("holiday gifts for him") change search language. Need periodic retraining.</li>
+  <li><strong>Re-embedding pipeline:</strong> Every time model weights change, you must re-embed your entire product catalog (10M SKUs × 100 tokens = 1B tokens × embedding cost).</li>
+  <li><strong>A/B testing infrastructure:</strong> Online evaluation of new model version vs. old. Shadow indexing required to avoid customer-facing degradation.</li>
+  <li><strong>Model version registry:</strong> Git for model weights, reproducibility, rollback capability.</li>
+  <li><strong>Embedding index rebuild:</strong> pgvector / Pinecone / Weaviate index must be rebuilt from scratch when vector space changes (non-backward-compatible).</li>
+  <li><strong>Latency monitoring:</strong> Fine-tuned models may be larger and slower than the off-the-shelf base model they replaced.</li>
+</ul>
+<p><strong>Rule of thumb:</strong> Budget <strong>0.5–1 FTE (ML Engineer)</strong> to maintain a production fine-tuned embedding model. If you don't have this capacity, use hybrid search + reranking instead.</p>
+</div>
+</details>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>8. Code Examples — Run It Yourself</h2>
+
+<p>Three scripts covering the three key concepts: MNRLoss training, BM25+Dense hybrid retrieval, and an end-to-end ROI calculator.</p>
+
+<div class="code-tabs" id="code-tabs-day4">
+  <div class="code-tab-btns">
+    <button class="code-tab-btn active" onclick="switchTab(event,'tab-mnr')">① MNRLoss Fine-Tune</button>
+    <button class="code-tab-btn" onclick="switchTab(event,'tab-hybrid')">② Hybrid BM25 + RRF</button>
+    <button class="code-tab-btn" onclick="switchTab(event,'tab-roi')">③ Fine-Tune ROI Calc</button>
+  </div>
+
+  <!-- ── TAB 1: mnrloss_finetune.py ─────────────────────────────── -->
+  <div class="code-tab-pane active" id="tab-mnr">
+    <div class="code-pane-header">
+      <span>mnrloss_finetune.py</span>
+      <button class="copy-btn" onclick="copyCode('code-mnr')">Copy</button>
+    </div>
+    <pre><code id="code-mnr">"""
+Week 1, Day 4 — Code 1: Fine-Tuning BGE with MultipleNegativesRankingLoss
+
+Demonstrates end-to-end embedding fine-tuning on a synthetic retail dataset:
+  - Building (query, positive_document) training pairs
+  - Hard negative mining via BM25 rank + embedding score filter
+  - Training with MNRLoss
+  - Evaluating nDCG@10 before and after fine-tuning
+
+Requires:
+  uv add sentence-transformers rank-bm25 datasets
+"""
+
+from sentence_transformers import SentenceTransformer, InputExample, losses
+from sentence_transformers.evaluation import InformationRetrievalEvaluator
+from torch.utils.data import DataLoader
+from rank_bm25 import BM25Okapi
+import numpy as np
+
+# ── 1. Toy Retail Training Dataset ──────────────────────────────────────
+# In production: replace with click-through logs or human annotations.
+TRAINING_PAIRS = [
+    ("steel toe work boots",         "Men's Waterproof Steel Toe Safety Boots – SKU-9921-ST"),
+    ("lightweight running sneakers",  "Women's Cushion Run Sneaker – Ultra-Light EVA Sole"),
+    ("kids trail shoes size 7",       "Children's Trail Runner – Size 7K, Waterproof"),
+    ("30 day return footwear",        "Footwear Return Policy: Full refund within 30 days of purchase"),
+    ("leather casual loafers brown",  "Men's Genuine Leather Slip-On Loafers – Cognac Brown"),
+    ("non-slip kitchen mat",          "Anti-Fatigue Kitchen Mat – Non-Slip Rubber Base 18x30in"),
+    ("insulated water bottle 32oz",   "Stainless Insulated Tumbler – 32oz Keep Cold 24hrs"),
+    ("waterproof hiking backpack",    "45L Adventure Backpack – IPX5 Waterproof, Osprey-style"),
+]
+
+# ── 2. Build InputExample list for MNRLoss ───────────────────────────────
+# MNRLoss needs InputExample(texts=[query, positive]).
+# In-batch negatives are the other positives in the same batch.
+train_examples = [
+    InputExample(texts=[q, p]) for q, p in TRAINING_PAIRS
+]
+
+# ── 3. Load base model ───────────────────────────────────────────────────
+print("Loading base model bge-small-en-v1.5...")
+model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+# ── 4. DataLoader + Loss ─────────────────────────────────────────────────
+# batch_size controls how many in-batch negatives are available.
+# In production use batch_size >= 64 for meaningful hard-negative density.
+train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=4)
+train_loss = losses.MultipleNegativesRankingLoss(model)
+
+# ── 5. Hard Negative Mining (BM25-assisted) ──────────────────────────────
+# Find documents that score high on BM25 (lexical match) but are NOT the
+# relevant positive. These are the most instructive negatives.
+print("\nMining hard negatives via BM25...")
+corpus = [p for _, p in TRAINING_PAIRS]
+tokenized_corpus = [doc.lower().split() for doc in corpus]
+bm25 = BM25Okapi(tokenized_corpus)
+
+hard_negative_pairs = []
+for query, positive in TRAINING_PAIRS:
+    query_tokens = query.lower().split()
+    bm25_scores = bm25.get_scores(query_tokens)
+
+    # Get top-3 BM25 hits
+    top_idxs = np.argsort(bm25_scores)[::-1][:3]
+    for idx in top_idxs:
+        candidate = corpus[idx]
+        # Only add if NOT the ground-truth positive
+        if candidate != positive:
+            hard_negative_pairs.append((query, positive, candidate))
+            break
+
+print(f"Found {len(hard_negative_pairs)} hard negative triplets:")
+for q, p, n in hard_negative_pairs[:3]:
+    print(f"  Q: {q[:40]}")
+    print(f"  P: {p[:40]}")
+    print(f"  N: {n[:40]}")
+    print()
+
+# ── 6. Train (demo: 1 epoch — production: 3-10 epochs on full dataset) ───
+print("Starting fine-tuning (1 epoch demo)...")
+model.fit(
+    train_objectives=[(train_dataloader, train_loss)],
+    epochs=1,
+    warmup_steps=2,
+    output_path="./finetuned-bge-retail",
+    show_progress_bar=True,
+)
+
+print("\nFine-tuning complete. Model saved to ./finetuned-bge-retail/")
+print("Next: run nDCG@10 evaluation comparing base vs. fine-tuned on held-out test set.")</code></pre>
+    <div class="code-run-tip">▶ python Claude/week1/day4/mnrloss_finetune.py</div>
+  </div>
+
+  <!-- ── TAB 2: hybrid_bm25_rrf.py ─────────────────────────────── -->
+  <div class="code-tab-pane" id="tab-hybrid">
+    <div class="code-pane-header">
+      <span>hybrid_bm25_rrf.py</span>
+      <button class="copy-btn" onclick="copyCode('code-hybrid')">Copy</button>
+    </div>
+    <pre><code id="code-hybrid">"""
+Week 1, Day 4 — Code 2: Hybrid Search (BM25 + Dense Vector) with RRF Fusion
+
+Demonstrates why hybrid search handles exact SKU lookup AND semantic queries
+without touching model weights.
+
+Requires:
+  uv add sentence-transformers rank-bm25 numpy
+"""
+
+import numpy as np
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
+
+# ── 1. Retail Product Catalog ────────────────────────────────────────────
+CATALOG = [
+    "Men's Waterproof Steel Toe Safety Boots – SKU-9921-ST",        # 0
+    "Women's Cushion Run Sneaker – Ultra-Light EVA Sole – SKU-4410", # 1
+    "Workwear Steel Blue Denim Jeans – Reinforced Rivets",           # 2
+    "Children's Trail Runner – Size 7K – Waterproof – SKU-7712",     # 3
+    "Stainless Steel Non-Stick 10pc Cookware Set",                   # 4
+    "Men's Leather Slip-On Loafers – Cognac Brown – SKU-3301",       # 5
+    "Cushioned Anti-Fatigue Insole – Fits Steel Toe Boots",          # 6
+    "Footwear Return Policy: 30-day full refund on all shoes",       # 7
+]
+
+QUERIES = [
+    "SKU-9921-ST",                         # exact part number — BM25 should win
+    "comfortable footwear reduces fatigue", # pure semantic — dense should win
+    "steel toe boots for work",             # hybrid advantage
+]
+
+# ── 2. BM25 Index ────────────────────────────────────────────────────────
+tokenized_catalog = [doc.lower().split() for doc in CATALOG]
+bm25 = BM25Okapi(tokenized_catalog)
+
+# ── 3. Dense Embedding Index ─────────────────────────────────────────────
+print("Loading bi-encoder...")
+model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+doc_vecs = model.encode(CATALOG, normalize_embeddings=True)  # unit-norm for cosine
+
+def bm25_rank(query: str) -> list[int]:
+    """Return catalog indices sorted by BM25 score (best first)."""
+    scores = bm25.get_scores(query.lower().split())
+    return list(np.argsort(scores)[::-1])
+
+def dense_rank(query: str) -> list[int]:
+    """Return catalog indices sorted by cosine similarity (best first)."""
+    q_vec = model.encode(
+        f"Represent this sentence for searching relevant passages: {query}",
+        normalize_embeddings=True
+    )
+    sims = doc_vecs @ q_vec  # dot == cosine since both normalized
+    return list(np.argsort(sims)[::-1])
+
+def rrf_fuse(ranks_a: list[int], ranks_b: list[int], k: int = 60) -> list[int]:
+    """
+    Reciprocal Rank Fusion: RRF(d) = 1/(k + rank_a(d)) + 1/(k + rank_b(d))
+    Returns catalog indices sorted by fused score (best first).
+    """
+    scores = {}
+    for rank, idx in enumerate(ranks_a):
+        scores[idx] = scores.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    for rank, idx in enumerate(ranks_b):
+        scores[idx] = scores.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores, key=lambda x: scores[x], reverse=True)
+
+# ── 4. Run All Three Modes ───────────────────────────────────────────────
+print("\n" + "="*65)
+print("HYBRID SEARCH DEMO — BM25 vs Dense vs RRF Fusion")
+print("="*65)
+
+for query in QUERIES:
+    bm25_results = bm25_rank(query)
+    dense_results = dense_rank(query)
+    rrf_results  = rrf_fuse(bm25_results, dense_results)
+
+    print(f"\nQuery: \"{query}\"")
+    print(f"  BM25  Top-1: {CATALOG[bm25_results[0]][:55]}")
+    print(f"  Dense Top-1: {CATALOG[dense_results[0]][:55]}")
+    print(f"  RRF   Top-1: {CATALOG[rrf_results[0]][:55]}")</code></pre>
+    <div class="code-run-tip">▶ python Claude/week1/day4/hybrid_bm25_rrf.py</div>
+  </div>
+
+  <!-- ── TAB 3: finetune_roi_calc.py ───────────────────────────── -->
+  <div class="code-tab-pane" id="tab-roi">
+    <div class="code-pane-header">
+      <span>finetune_roi_calc.py</span>
+      <button class="copy-btn" onclick="copyCode('code-roi')">Copy</button>
+    </div>
+    <pre><code id="code-roi">"""
+Week 1, Day 4 — Code 3: Fine-Tune vs Hybrid Search ROI Calculator
+
+Pure Python — no libraries needed.
+Input your team's actual numbers to get a go/no-go recommendation.
+"""
+
+def roi_analysis(
+    # ── Training data availability ────────────────────────────────────────
+    num_training_pairs: int     = 5_000,      # (query, positive) pairs you have
+
+    # ── Expected nDCG@10 improvements (estimated from BEIR benchmarks) ────
+    baseline_ndcg: float        = 0.60,       # off-the-shelf model on your domain
+    hybrid_ndcg_delta: float    = 0.10,       # +10% from adding BM25 + RRF
+    reranker_ndcg_delta: float  = 0.08,       # +8% from adding cross-encoder
+    finetune_ndcg_delta: float  = 0.12,       # +12% from fine-tuning (optimistic)
+
+    # ── Business impact mapping ──────────────────────────────────────────
+    monthly_search_revenue: float = 500_000,  # monthly GMV from search channel
+    ndcg_to_revenue_elasticity: float = 0.5,  # 1% nDCG = 0.5% revenue lift (retail avg)
+
+    # ── Fine-tuning costs ─────────────────────────────────────────────────
+    ml_engineer_day_rate: float  = 1_200,     # $1,200/day (fully loaded)
+    finetune_setup_days: int     = 20,        # initial setup (data pipeline, training infra)
+    finetune_monthly_maintain: float = 5_000, # ongoing MLOps per month (0.3 FTE)
+    gpu_training_cost: float     = 800,       # one-time training run (A10G spot)
+
+    # ── Hybrid search costs ───────────────────────────────────────────────
+    hybrid_setup_days: int       = 3,
+    hybrid_monthly_maintain: float = 500,     # Elasticsearch/OpenSearch operational cost
+):
+    print("=" * 70)
+    print("   FINE-TUNE vs HYBRID SEARCH — ROI DECISION CALCULATOR")
+    print("=" * 70)
+
+    # ── Data gate check ─────────────────────────────────────────────────
+    print(f"\n📊 DATA AVAILABILITY: {num_training_pairs:,} training pairs")
+    if num_training_pairs < 5_000:
+        print("  ⛔ INSUFFICIENT DATA — Fine-tuning will produce unreliable results.")
+        print("     Minimum recommended: 10,000 high-quality (query, positive) pairs.")
+        print("     RECOMMENDATION: Build hybrid search. Invest time in data collection.")
+        return
+    elif num_training_pairs < 10_000:
+        print("  ⚠️  MARGINAL DATA — Fine-tuning possible but validation will be noisy.")
+        finetune_ndcg_delta *= 0.6  # Discount expected gains
+    else:
+        print("  ✅ Sufficient training data for reliable fine-tuning.")
+
+    # ── nDCG projections ────────────────────────────────────────────────
+    hybrid_ndcg    = baseline_ndcg + hybrid_ndcg_delta
+    reranked_ndcg  = hybrid_ndcg + reranker_ndcg_delta
+    finetuned_ndcg = baseline_ndcg + finetune_ndcg_delta
+
+    print(f"\n📈 nDCG@10 PROJECTIONS:")
+    print(f"   Baseline (off-the-shelf):          {baseline_ndcg:.2f}")
+    print(f"   + Hybrid BM25 + RRF:               {hybrid_ndcg:.2f}  (+{hybrid_ndcg_delta:.0%})")
+    print(f"   + Hybrid + Cross-Encoder Reranker: {reranked_ndcg:.2f}  (+{reranker_ndcg_delta:.0%})")
+    print(f"   Fine-Tuned Embedding (standalone):  {finetuned_ndcg:.2f}  (+{finetune_ndcg_delta:.0%})")
+
+    # ── Revenue impact ───────────────────────────────────────────────────
+    def revenue_lift(ndcg_delta):
+        return monthly_search_revenue * ndcg_delta * ndcg_to_revenue_elasticity
+
+    hybrid_rev   = revenue_lift(hybrid_ndcg_delta + reranker_ndcg_delta)
+    finetune_rev = revenue_lift(finetune_ndcg_delta)
+
+    print(f"\n💰 MONTHLY REVENUE IMPACT (elasticity = {ndcg_to_revenue_elasticity}× nDCG):")
+    print(f"   Hybrid + Reranker revenue lift:  ${hybrid_rev:,.0f}/mo")
+    print(f"   Fine-tune revenue lift:          ${finetune_rev:,.0f}/mo")
+
+    # ── Cost comparison ──────────────────────────────────────────────────
+    hybrid_setup_cost    = hybrid_setup_days * ml_engineer_day_rate
+    finetune_setup_cost  = finetune_setup_days * ml_engineer_day_rate + gpu_training_cost
+
+    print(f"\n🏗️  SETUP COSTS:")
+    print(f"   Hybrid search setup:   ${hybrid_setup_cost:,.0f}  ({hybrid_setup_days} eng-days)")
+    print(f"   Fine-tune setup:       ${finetune_setup_cost:,.0f}  ({finetune_setup_days} eng-days + GPU)")
+
+    print(f"\n🔧 ONGOING MONTHLY COSTS:")
+    print(f"   Hybrid search:         ${hybrid_monthly_maintain:,.0f}/mo")
+    print(f"   Fine-tuned embedding:  ${finetune_monthly_maintain:,.0f}/mo")
+
+    # ── Payback period ───────────────────────────────────────────────────
+    hybrid_payback_months = hybrid_setup_cost / max(1, hybrid_rev - hybrid_monthly_maintain)
+    ft_payback_months     = finetune_setup_cost / max(1, finetune_rev - finetune_monthly_maintain)
+
+    print(f"\n⏱️  PAYBACK PERIOD:")
+    print(f"   Hybrid + Reranker:     {hybrid_payback_months:.1f} months")
+    print(f"   Fine-tuned Embedding:  {ft_payback_months:.1f} months")
+
+    # ── Verdict ─────────────────────────────────────────────────────────
+    print("\n" + "─" * 70)
+    if hybrid_payback_months < ft_payback_months and reranked_ndcg >= finetuned_ndcg - 0.03:
+        print("VERDICT: ✅ HYBRID SEARCH + RERANKER (Engineer B was right)")
+        print("  Faster to ship, lower ongoing cost, comparable quality gain.")
+    else:
+        print("VERDICT: ⚠️ FINE-TUNING may be justified IF:")
+        print("  - nDCG gap after hybrid+reranker is still >5%")
+        print("  - You have dedicated ML infra team bandwidth")
+        print("  - Training data quality is validated via offline eval")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    print("── Scenario A: Small team, 5K pairs ──────────────────────────────")
+    roi_analysis(num_training_pairs=5_000)
+
+    print("\n── Scenario B: Large team, 50K pairs, high-revenue search ───────")
+    roi_analysis(
+        num_training_pairs=50_000,
+        monthly_search_revenue=5_000_000,
+        finetune_ndcg_delta=0.18,
+        finetune_setup_days=40,
+        finetune_monthly_maintain=12_000,
+    )</code></pre>
+    <div class="code-run-tip">▶ python Claude/week1/day4/finetune_roi_calc.py &nbsp; (no API key needed — pure math)</div>
+  </div>
+</div><!-- /code-tabs -->
+
+<script>
+function switchTab(evt, tabId) {
+  var container = document.getElementById('code-tabs-day4');
+  container.querySelectorAll('.code-tab-pane').forEach(function(p) { p.classList.remove('active'); });
+  container.querySelectorAll('.code-tab-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.getElementById(tabId).classList.add('active');
+  evt.currentTarget.classList.add('active');
+}
+function copyCode(elemId) {
+  var text = document.getElementById(elemId).textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = event.currentTarget;
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+}
+</script>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>9. The Architect Decision Framework — Interview-Ready Answer</h2>
+
+<p>When an interviewer asks <em>"When would you fine-tune an embedding model?"</em>, answer with this flowchart:</p>
+
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="320" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+
+  <!-- Box 1 -->
+  <rect x="240" y="20" width="220" height="45" rx="7" fill="#1f5f8b"/>
+  <text x="350" y="40" font-family="-apple-system,sans-serif" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">Search Quality Issue</text>
+  <text x="350" y="58" font-family="-apple-system,sans-serif" font-size="10" fill="#d0e3f7" text-anchor="middle">nDCG@10 measured below target</text>
+
+  <!-- Arrow down -->
+  <line x1="350" y1="65" x2="350" y2="90" stroke="#999" stroke-width="1.5"/>
+
+  <!-- Diamond 1 -->
+  <polygon points="350,90 430,120 350,150 270,120" fill="#fff" stroke="#1f5f8b" stroke-width="2"/>
+  <text x="350" y="115" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">Tried Hybrid</text>
+  <text x="350" y="130" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">BM25 + Reranker?</text>
+
+  <!-- NO → left -->
+  <line x1="270" y1="120" x2="140" y2="120" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="200" y="112" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" font-weight="700">NO</text>
+  <rect x="50" y="95" width="90" height="50" rx="7" fill="#a8451f"/>
+  <text x="95" y="116" font-family="-apple-system,sans-serif" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">Do that first</text>
+  <text x="95" y="132" font-family="-apple-system,sans-serif" font-size="9" fill="#fce8e6" text-anchor="middle">3-day project</text>
+
+  <!-- YES → down -->
+  <line x1="350" y1="150" x2="350" y2="175" stroke="#999" stroke-width="1.5"/>
+  <text x="365" y="165" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" font-weight="700">YES</text>
+
+  <!-- Diamond 2 -->
+  <polygon points="350,175 430,205 350,235 270,205" fill="#fff" stroke="#1f5f8b" stroke-width="2"/>
+  <text x="350" y="200" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">≥10K training pairs</text>
+  <text x="350" y="215" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">&amp; ML infra available?</text>
+
+  <!-- NO → left -->
+  <line x1="270" y1="205" x2="140" y2="205" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="200" y="197" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" font-weight="700">NO</text>
+  <rect x="50" y="180" width="90" height="50" rx="7" fill="#a8451f"/>
+  <text x="95" y="201" font-family="-apple-system,sans-serif" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">Stay Hybrid</text>
+  <text x="95" y="217" font-family="-apple-system,sans-serif" font-size="9" fill="#fce8e6" text-anchor="middle">Collect data first</text>
+
+  <!-- YES → down -->
+  <line x1="350" y1="235" x2="350" y2="260" stroke="#999" stroke-width="1.5"/>
+  <text x="365" y="250" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" font-weight="700">YES</text>
+
+  <!-- Diamond 3 -->
+  <polygon points="350,260 430,285 350,310 270,285" fill="#fff" stroke="#1f5f8b" stroke-width="2"/>
+  <text x="350" y="280" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">Gap &gt;5% nDCG</text>
+  <text x="350" y="295" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">after reranking?</text>
+
+  <!-- NO → right -->
+  <line x1="430" y1="285" x2="555" y2="285" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="488" y="277" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" font-weight="700">NO</text>
+  <rect x="555" y="260" width="115" height="50" rx="7" fill="#a8451f"/>
+  <text x="612" y="281" font-family="-apple-system,sans-serif" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">You're done!</text>
+  <text x="612" y="297" font-family="-apple-system,sans-serif" font-size="9" fill="#fce8e6" text-anchor="middle">Hybrid is good enough</text>
+
+  <!-- YES → right -->
+  <line x1="430" y1="285" x2="430" y2="215" stroke="#2e6b3e" stroke-width="1.5" stroke-dasharray="none"/>
+  <rect x="500" y="165" width="115" height="50" rx="7" fill="#2e6b3e"/>
+  <text x="557" y="186" font-family="-apple-system,sans-serif" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">Fine-Tune!</text>
+  <text x="557" y="202" font-family="-apple-system,sans-serif" font-size="9" fill="#e6f4ea" text-anchor="middle">MNRLoss + hard negs</text>
+  <line x1="500" y1="190" x2="430" y2="260" stroke="#2e6b3e" stroke-width="1.5" stroke-dasharray="4,3"/>
+</svg>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2>10. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Test Your Architectural Judgment</h3>
+
+<div class="quiz">
+<div class="q">1. A retailer has 5,000 click-through training pairs and search nDCG@10 of 0.61. They haven't tried BM25 hybrid yet. What should they do?</div>
+<button data-correct="false">Fine-tune BGE immediately with the 5,000 pairs.</button>
+<button data-correct="true">Implement BM25 + RRF hybrid search first — takes 3 days and likely closes most of the quality gap.</button>
+<button data-correct="false">Collect 50,000 more pairs before doing anything.</button>
+<button data-correct="false">Switch to OpenAI text-embedding-3-large (1536 dimensions).</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. What makes MultipleNegativesRankingLoss (MNRLoss) more sample-efficient than classic Triplet Loss?</div>
+<button data-correct="false">It uses a larger transformer model internally.</button>
+<button data-correct="true">Every other positive in the batch becomes a free in-batch negative — batch size 64 gives 63 negatives per query instead of 1.</button>
+<button data-correct="false">It doesn't require a query prefix like BGE does.</button>
+<button data-correct="false">It trains on BM25 scores directly.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. A query "SKU-9921-ST" gets poor dense vector search results but perfect BM25 results. Why, and what's the architectural fix?</div>
+<button data-correct="false">The embedding model needs fine-tuning on SKU data.</button>
+<button data-correct="true">Off-the-shelf embeddings treat "SKU-9921-ST" as an OOV token pattern with no semantic meaning. Fix: add BM25 layer via RRF — BM25 IDF naturally gives exact SKU strings very high scores.</button>
+<button data-correct="false">Switch to a 3072-dimension embedding model.</button>
+<button data-correct="false">Add the SKU to the model's vocabulary via tokenizer extension.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Why can't you simply average a document's BM25 score and cosine similarity score for hybrid retrieval fusion?</div>
+<button data-correct="false">BM25 and cosine similarity are always negative numbers.</button>
+<button data-correct="true">BM25 scores are unbounded (can be 0–∞) while cosine similarity is bounded [−1, 1] — the scales are incompatible. RRF fuses based on rank position, which is scale-invariant.</button>
+<button data-correct="false">Averaging double-counts the semantic signal.</button>
+<button data-correct="false">BM25 only works for documents over 500 tokens.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. What is "dimensional collapse" in the context of contrastive learning with easy negatives?</div>
+<button data-correct="false">The model's embedding dimensions shrink from 768d to 64d automatically.</button>
+<button data-correct="true">Easy negatives produce near-zero gradients, so the model stops learning fine-grained distinctions. The effective useful dimensionality of the embedding space shrinks — many dimensions carry no discriminative information.</button>
+<button data-correct="false">The model starts generating NaN embeddings due to numerical overflow.</button>
+<button data-correct="false">Hard negatives collapse the training loss to zero too quickly.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Questions on hard negative mining, BEIR evaluation setup, or building training data pipelines from click-through logs? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day3/0003-openai-vs-opensource-embeddings.html">&larr; Day 3: OpenAI vs Open-Source</a>
+<a href="../day5/0005-embedding-model-justification.html">Day 5: Justification &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct
+        ? '✅ Correct — solid architectural judgment.'
+        : '❌ Review the relevant section above and try to reason through from first principles.';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

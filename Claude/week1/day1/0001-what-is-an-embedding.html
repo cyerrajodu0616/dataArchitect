@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>What an Embedding Actually Is</title>
+<link rel="stylesheet" href="../assets/lesson-style.css">
+</head>
+<body>
+
+<h1>What an Embedding Actually Is</h1>
+<p class="subtitle">Week 1, Day 1 — deep dive · Lesson 0001</p>
+
+<p>You already know how to make two rows in a warehouse table "close" to each other: pick features,
+compute a distance. An embedding does the same job on unstructured text — except the features
+aren't yours to define. A neural network learned them from patterns in language, and what falls
+out is a vector: a fixed-length list of numbers that positions a piece of text in a space where
+<strong>semantic closeness = spatial closeness</strong>.</p>
+
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="320" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="30" font-family="-apple-system,sans-serif" font-size="12" fill="#6b6b6b" letter-spacing="1">EMBEDDING SPACE (simplified to 2D)</text>
+
+  <circle cx="180" cy="120" r="6" fill="#a8451f"/>
+  <text x="192" y="115" font-family="-apple-system,sans-serif" font-size="12" fill="#1a1a1a">"Men's Running Shoes, Size 10"</text>
+  <circle cx="220" cy="150" r="6" fill="#a8451f"/>
+  <text x="232" y="155" font-family="-apple-system,sans-serif" font-size="12" fill="#1a1a1a">"Women's Trail Running Sneakers"</text>
+  <ellipse cx="200" cy="135" rx="75" ry="45" fill="#a8451f" opacity="0.08"/>
+  <text x="150" y="90" font-family="-apple-system,sans-serif" font-size="11" fill="#a8451f" font-style="italic">close together — both footwear</text>
+
+  <circle cx="540" cy="240" r="6" fill="#2e6b3e"/>
+  <text x="460" y="265" font-family="-apple-system,sans-serif" font-size="12" fill="#1a1a1a">"Stainless Steel Kitchen Knife Set"</text>
+
+  <line x1="200" y1="135" x2="540" y2="240" stroke="#bbb" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="330" y="175" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" font-style="italic">far apart — different meaning</text>
+</svg>
+<p style="text-align:center;font-family:-apple-system,sans-serif;font-size:0.8rem;color:#6b6b6b;margin-top:-1rem;">
+Two footwear listings land near each other despite sharing almost no exact words; the unrelated product sits far off — this is the whole idea in one picture.</p>
+
+<h2>1. The mechanism: contrastive training</h2>
+
+<p>Embedding models like <code>text-embedding-3-small</code> and <code>text-embedding-3-large</code>
+start from a transformer language model backbone, then get trained with a specific objective:
+given pairs of text known to be related (a search query and the doc that answers it, two
+paraphrases, a product title and its description), pull those vectors together. Given unrelated
+pairs, push them apart. Do this over billions of examples and a geometry emerges where "meaning"
+has spatial structure.</p>
+
+<div class="example-box">
+<div class="label">Worked example</div>
+Three sentences, run through an embedding model conceptually:
+<pre>A: "The customer returned the shoes because they didn't fit."
+B: "Customer requested a refund on footwear due to sizing issue."
+C: "The warehouse received a new shipment of stainless steel cookware."</pre>
+A and B share almost no exact words but describe the same event — they'd land close together.
+C shares more surface vocabulary with neither, and would land far from both, despite being a
+normal retail sentence too. The model isn't matching words. It's matching what's <em>being said</em>.
+</div>
+
+<h2>2. Dimensions: coordinates, not concepts</h2>
+
+<p><code>text-embedding-3-small</code> returns 1536 numbers per input; <code>-large</code> returns
+3072. Neither model lets you point at dimension 812 and say "that's the retail-return dimension."
+The dimensions are jointly learned and only meaningful in combination — like how no single column
+in a customer table tells you "loyalty," but spend + frequency + recency together might.</p>
+
+<p>OpenAI's v3 models were trained with <strong>Matryoshka representation learning</strong>: you
+can truncate the vector (keep only the first N of the 1536/3072 numbers) via the <code>dimensions</code>
+parameter and retain most of the semantic quality, trading a bit of accuracy for storage and query
+speed. This is a real lever you'll pull in Week 2 when you're sizing pgvector indexes.</p>
+
+<div class="example-box">
+<span class="retail-tag">retail angle</span>
+Say your product catalog embedding is 1536-dim at full size but you're indexing 40M SKUs across
+regional catalogs. Truncating to 256 dims via the <code>dimensions</code> param could cut your
+pgvector index size and query latency substantially, and for a coarse "browse similar products"
+feature the accuracy loss may not matter — you'd want the full 1536 dims for a precision-sensitive
+task like fraud/return-pattern matching, though.
+</div>
+
+<h2>3. More worked examples — building the intuition</h2>
+
+<div class="example-box">
+<div class="label">Example: near-duplicates in a catalog</div>
+<pre>"Men's Running Shoes, Size 10, Black"
+"Men's Black Running Shoes - Size 10"</pre>
+Near-identical vectors. This is exactly the mechanism behind catalog dedup: two SKUs entered by
+different vendors with different phrasing collapse to nearly the same point.
+</div>
+
+<div class="example-box">
+<div class="label">Example: same words, different meaning</div>
+<pre>"I need a light jacket for spring."
+"Turn off the light before you leave."</pre>
+Both use "light," but context resolves it — "light" here means weight-of-garment vs. illumination.
+Because embeddings are computed over the whole sentence (not per-word, though token-level context
+feeds into it), the two vectors land far apart despite the shared token. This is precisely what
+keyword search gets wrong and embeddings get right.
+</div>
+
+<div class="example-box">
+<div class="label">Example: same meaning, opposite words</div>
+<pre>"This blender is excellent — highly recommend."
+"Terrible blender, would not recommend."</pre>
+These are <em>not</em> close together, even though both are "reviews about a blender." Sentiment
+is part of what the model captures — a naive bag-of-words overlap metric might see two review-shaped
+sentences and call them similar; a good embedding separates them by polarity. Worth remembering
+when you design retrieval for a customer-service RAG system in Week 8 — semantic similarity is not
+the same as "relevant to the same resolution."
+</div>
+
+<h2>4. Where this bites in practice</h2>
+
+<p>Two failure modes worth pre-loading before Week 3 (RAG):</p>
+<ul>
+<li><strong>Homonyms across domains.</strong> "Apple" the fruit and "Apple" the brand embed
+differently depending on surrounding context — but if your chunks are too short (a lone product
+title with no category context), the model has less to disambiguate with.</li>
+<li><strong>Numbers and exact identifiers embed poorly.</strong> SKUs, model numbers, exact prices —
+embeddings capture semantic meaning, not exact-match precision. "SKU-88213" and "SKU-88214" may sit
+almost as close together as "SKU-88213" and itself. This is <em>the</em> reason hybrid search
+(keyword + vector) matters for retail catalogs — you'll hit this directly in Week 2, Day 4.</li>
+</ul>
+
+<h2>5. Why this technique exists at all</h2>
+
+<p>Worth knowing the lineage — it's the difference between "embeddings = AI search" and actually
+understanding what problem they were built to solve.</p>
+
+<p>Legacy techniques (inverted index, trigrams, edit distance) are all <strong>lexical</strong> —
+they measure character/string overlap. That's a hard ceiling: no amount of tuning lets an n-gram
+index match <code>"AmEx"</code> to <code>"American Express Company"</code>, because there's no
+shared characters to index on. The signal isn't in the characters, it's in what the words
+<em>refer to</em>.</p>
+
+<ul>
+<li><strong>Word2Vec / GloVe (2013–14)</strong> — proved meaning could be represented
+geometrically and learned automatically from raw text (no hand-labeling). Famous proof point:
+<code>king - man + woman ≈ queen</code>. Limitation: one fixed vector per word, so "bank" (river)
+and "bank" (finance) got the same vector.</li>
+<li><strong>Transformers / BERT (2018+)</strong> — vectors became context-dependent, computed
+per full input. This is what solves the "light jacket" vs. "turn off the light" case above.</li>
+<li><strong>Sentence-level contrastive embeddings (Sentence-BERT 2019 → OpenAI's
+<code>text-embedding-*</code> line)</strong> — optimized so whole sentences/paragraphs, not just
+words, land in a comparable space. Direct ancestor of what you use today.</li>
+<li><strong>The mass-adoption catalyst: RAG (2022–23).</strong> Once people needed to retrieve
+relevant chunks to feed an LLM, embeddings became the standard retrieval mechanism — cheap via
+API, no labeled training data required, works out of the box across any domain. That's what pulled
+embeddings from NLP research into everyday data infrastructure, including your
+<code>pgvector</code>-backed personal agent.</li>
+</ul>
+
+<div class="example-box">
+<span class="retail-tag">interview framing</span>
+Embeddings weren't invented to replace entity resolution — they were invented for semantic
+search/retrieval in language understanding. Entity-matching and dedup borrowed the technique
+afterward because "is this the same entity" and "is this text semantically related" share the same
+underlying math. Knowing *why* a tool exists, not just *that* it exists, is the depth that
+separates an architect from someone who only knows the API surface.
+</div>
+
+<h2>Appendix — Tokenization &amp; Attention (optional, conceptual, no math)</h2>
+
+<p>Not part of the core 12-week path — extra depth for your own intuition, underneath everything
+above. Two ideas: how text gets chopped up before the model sees it, and how the model decides
+what to pay attention to once it has.</p>
+
+<h3>Tokenization: text isn't read a word at a time</h3>
+
+<p>Before anything else happens, your input string is broken into <strong>tokens</strong> —
+usually subword pieces, not whole words. A tokenizer trained via byte-pair encoding (BPE) or
+similar starts from individual characters and iteratively merges the most frequent adjacent pairs
+across a huge corpus, building up a fixed vocabulary of ~50k–100k common chunks.</p>
+
+<div class="example-box">
+<div class="label">Worked example</div>
+<pre>"unfitted"     → ["un", "fit", "ted"]
+"parkway"      → ["park", "way"]
+"SKU-88213"    → ["SK", "U", "-", "882", "13"]  (roughly — exact split varies by tokenizer)</pre>
+Common whole words often stay as one token. Rare words, made-up words, typos, and identifiers get
+split into smaller, more common fragments. This is exactly why <code>"SKU-88213"</code> embeds
+poorly for exact matching from the main lesson — the tokenizer breaks it into generic numeric/
+symbol fragments that carry very little distinguishing signal, the same fragments a thousand other
+SKUs would also produce.
+</div>
+
+<p>Practical consequence: token count ≠ word count. This is why OpenAI bills and limits by tokens,
+not words or characters — and why chunk-size decisions in Week 3 (RAG) are made in tokens, not
+sentences.</p>
+
+<h3>Attention: how the model decides what matters, per word</h3>
+
+<p>Once text is tokenized, each token gets an initial vector (an embedding lookup — ironically, a
+smaller embedding table is the very first step inside the model). The transformer then runs
+several layers of <strong>self-attention</strong>: for every token, the model asks "which other
+tokens in this input should influence my meaning right now?" and reweights the token's vector
+based on the answer.</p>
+
+<div class="example-box">
+<div class="label">Worked example — this is how context resolves ambiguity</div>
+<pre>"I need a light jacket for spring."</pre>
+When the model processes the token "light," self-attention lets it look at "jacket" nearby and
+"spring" further along, and weight those heavily — pulling "light" toward its weight-of-garment
+sense rather than its illumination sense. In
+<pre>"Turn off the light before you leave."</pre>
+the same token "light" attends instead to "turn off" and "before you leave" — pulling it toward
+illumination. Same starting token, different final vector, purely because attention lets context
+reshape it layer by layer. This is the mechanism behind the "light jacket" example earlier in the
+lesson — now you've seen why it happens, not just that it happens.
+</div>
+
+<p>Stack many attention layers, and by the final layer every token's vector encodes a rich, fully
+contextualized representation of "this word, in this exact sentence." Pooling (mentioned earlier)
+then compresses all those per-token vectors into the single sentence/paragraph vector you actually
+get back from the embeddings API.</p>
+
+<div class="example-box">
+<span class="retail-tag">retail angle</span>
+This is also why a product description with more surrounding context ("Men's lightweight running
+jacket, breathable mesh, spring/fall wear") embeds more precisely than a bare title ("Light
+Jacket") — attention has more real context to work with, and the resulting vector encodes more
+disambiguated meaning. A recurring lever in retail catalog embedding quality: richer input text
+generally beats terser input text, up to the point of diminishing returns / cost.
+</div>
+
+<div class="primary-source">
+<strong>Further reading (optional, more technical):</strong>
+<a href="https://jalammar.github.io/illustrated-transformer/" target="_blank">The Illustrated Transformer</a>
+— the standard visual explainer for attention mechanics, widely regarded as the best conceptual
+walkthrough without requiring the underlying math.
+</div>
+
+<h3>Quick check</h3>
+<div class="quiz">
+<div class="q">Why would "SKU-88213" and "SKU-88214" embed almost identically, even though they're different products?</div>
+<button onclick="answer(this,false)">Because the embedding model has a bug with numbers</button>
+<button onclick="answer(this,true)">Because embeddings capture semantic meaning, and to the model these look like the same kind of token in the same kind of context</button>
+<button onclick="answer(this,false)">Because SKUs are always sequential in the same product line</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">Two sentences share zero exact keywords but describe the same event. What will their embeddings most likely look like?</div>
+<button onclick="answer(this,false)">Far apart, since there's no keyword overlap</button>
+<button onclick="answer(this,true)">Close together, since embeddings match meaning, not surface words</button>
+<button onclick="answer(this,false)">Identical, since the model can't tell them apart</button>
+<div class="feedback"></div>
+</div>
+
+<div class="primary-source">
+<strong>Primary source:</strong>
+<a href="https://platform.openai.com/docs/guides/embeddings" target="_blank">OpenAI Embeddings Guide</a>
+— authoritative on model behavior, the <code>dimensions</code> truncation parameter, and use-case
+guidance. Worth reading end-to-end once this week.
+</div>
+
+<p class="ask-agent">Stuck on anything above, or want to push further into a specific example?
+Ask your teaching agent — that's what it's here for.</p>
+
+<div class="nav">
+<span>← Lesson 0001</span>
+<span>Next: Distance metrics (Week 1, Day 2) →</span>
+</div>
+
+<script>
+function answer(btn, correct) {
+  const box = btn.closest('.quiz');
+  const buttons = box.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  btn.classList.add(correct ? 'correct' : 'incorrect');
+  const fb = box.querySelector('.feedback');
+  fb.style.display = 'block';
+  fb.textContent = correct
+    ? "Right — embeddings encode meaning from context, not lexical identity. Exact-match tasks need a keyword layer alongside them."
+    : "Not quite — think about what the model is actually trained to capture: meaning from context, not exact tokens.";
+}
+</script>
+
+</body>
+</html>
