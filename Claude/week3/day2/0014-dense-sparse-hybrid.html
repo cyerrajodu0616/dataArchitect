@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0014 — Dense vs Sparse vs Hybrid: What Each Retrieval Family Actually Computes</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>Dense vs Sparse vs Hybrid — What Each Family Actually Computes</h1>
+<p class="subtitle">Week 3, Day 2 — BM25 derived, where each arm fails, and the IDF Postgres doesn't give you</p>
+
+<p>Week 2 Day 4 built <em>production</em> hybrid search: query-class routing, weighted RRF, the evaluation traps. It assumed the two arms work and asked how to combine them. Today goes underneath that: <strong>what each arm actually computes, and therefore what it can and cannot possibly retrieve.</strong></p>
+
+<p>That matters because the most common hybrid-search failure is not a fusion bug. It is that <strong>one arm is much weaker than the team believes, and fusion is hiding it.</strong></p>
+
+<h2>1. Three Families, Three Different Objects</h2>
+
+<table class="matrix-table">
+  <tr><th></th><th>Sparse / lexical</th><th>Dense</th><th>Learned sparse</th></tr>
+  <tr>
+    <td><strong>The vector</strong></td>
+    <td>|V| dimensions (~10⁵–10⁶), almost all zero. One dimension per vocabulary term.</td>
+    <td>384–3072 dimensions, all non-zero. No dimension means anything on its own.</td>
+    <td>|V| dimensions, ~100–400 non-zero. A model decides which terms fire and how hard.</td>
+  </tr>
+  <tr>
+    <td><strong>What matching means</strong></td>
+    <td>Literal term overlap, weighted by rarity and saturated by frequency.</td>
+    <td>Proximity in a learned space. Nothing needs to be spelled the same.</td>
+    <td>Term overlap <em>after</em> the model has expanded the query and document into related terms.</td>
+  </tr>
+  <tr>
+    <td><strong>Index structure</strong></td>
+    <td>Inverted index. Postings lists, skip pointers. Decades of engineering.</td>
+    <td>ANN graph or IVF (Week 2). Approximate by construction.</td>
+    <td>Inverted index — the same machinery as sparse.</td>
+  </tr>
+  <tr>
+    <td><strong>Out-of-vocabulary term</strong></td>
+    <td class="yes">Works. A term nobody has ever seen still matches itself.</td>
+    <td class="no">Fails quietly. A SKU or code the model never saw lands somewhere arbitrary.</td>
+    <td class="partial">Depends on tokenisation — subword pieces may or may not survive.</td>
+  </tr>
+  <tr>
+    <td><strong>Paraphrase</strong></td>
+    <td class="no">Fails. "Can I get my money back" ≠ "refund policy".</td>
+    <td class="yes">Works. This is the entire reason dense retrieval exists.</td>
+    <td class="yes">Works, via expansion.</td>
+  </tr>
+  <tr>
+    <td><strong>Explainability</strong></td>
+    <td class="yes">You can point at the matched terms.</td>
+    <td class="no">"It was close in the space." Painful in a regulated review.</td>
+    <td class="yes">You can point at the fired terms and their weights.</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">The framing that makes hybrid search obvious rather than fashionable</div>
+Sparse retrieval fails on <strong>vocabulary mismatch</strong> — the answer exists but uses different words. Dense retrieval fails on <strong>precision of identity</strong> — the words are exact and rare and the model has no opinion about them. <strong>These are disjoint failure modes.</strong> That is why combining them works, and why the combination is worth roughly what the weaker arm contributes on its own worst queries — not an average of the two.
+</div>
+
+<h2>2. BM25, Derived</h2>
+
+<p>You cannot reason about the lexical arm's failures without knowing what it optimises. BM25 is three ideas stacked:</p>
+
+<div class="math-box">
+score(q, d) = &#8721;<sub>t &#8712; q</sub> &nbsp; IDF(t) &#183; <sup>f(t,d) &#183; (k&#8321; + 1)</sup>&#8260;<sub>f(t,d) + k&#8321;(1 &#8722; b + b &#183; |d|/avgdl)</sub>
+</div>
+
+<table class="matrix-table">
+  <tr><th>Component</th><th>What it does</th><th>Why it exists</th><th>Parameter</th></tr>
+  <tr>
+    <td><strong>Term frequency saturation</strong></td>
+    <td><code>f·(k₁+1)/(f+k₁·…)</code> — the 10th occurrence of a term adds far less than the 2nd.</td>
+    <td>A document saying "refund" 50 times is not 50× more about refunds than one saying it once. Raw TF is trivially gamed and empirically wrong.</td>
+    <td><code>k₁</code> ≈ 1.2–2.0. <strong>Lower = flatter</strong>, saturates sooner.</td>
+  </tr>
+  <tr>
+    <td><strong>Length normalisation</strong></td>
+    <td><code>(1 − b + b·|d|/avgdl)</code> — penalises long documents.</td>
+    <td>A long document matches more terms by accident. Without this, concatenating your corpus into one file wins every query.</td>
+    <td><code>b</code> ∈ [0,1], typically 0.75. <strong>b=0 disables it</strong> — right when documents are uniform length, e.g. fixed-size chunks.</td>
+  </tr>
+  <tr>
+    <td><strong>IDF</strong></td>
+    <td><code>ln(1 + (N−n+0.5)/(n+0.5))</code> — rare terms count more.</td>
+    <td>This is the one that does the actual discriminating, and it's the one Postgres omits. §4.</td>
+    <td>No parameter. It's a property of the corpus.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">A tuning note specific to what you built yesterday</div>
+Day 1 produced <strong>fixed-size chunks</strong> — 200 or 512 tokens, all roughly equal. Length normalisation exists to correct for variable document length, and your documents no longer have variable length. <strong>Lowering <code>b</code> toward 0.3, or to 0, is often right on a chunked corpus</strong> and is almost never done, because <code>b=0.75</code> is the default everyone inherits from full-document retrieval. Test it — it's a one-line change with a measurable effect.
+</div>
+
+<h2>3. Where Each Arm Fails — Concretely</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><strong>Dense fails:</strong> <span class="kv">"MX-4400-BLK"</span>, <span class="kv">"Thunderbolt 4"</span>, <span class="kv">"65W"</span>. Model numbers and specs are arbitrary strings; the embedding puts <span class="kv">MX-4400</span> next to <span class="kv">MX-4500</span>, which is the wrong product.</p>
+    <p><strong>Sparse fails:</strong> "something to keep my laptop cool" → the listing says <em>cooling pad</em>, <em>thermal</em>, <em>ventilated stand</em>. Zero term overlap.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><strong>Dense fails:</strong> <span class="kv">ICD-10 E11.9</span> vs <span class="kv">E11.29</span>, form numbers like <span class="kv">ICC21-VUL-3</span>, state codes. Near-identical strings, different meanings — the exact case embeddings blur.</p>
+    <p><strong>Sparse fails:</strong> "can we still deny this claim" → the document says <em>contestability</em>, <em>material misrepresentation</em>, <em>rescission</em>. The user's words appear nowhere.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><strong>Dense fails:</strong> <span class="kv">reason code 4853</span> vs <span class="kv">4837</span> — two digits apart, completely different rules. Merchant descriptors like <span class="kv">SQ *COFFEE 4471</span> are not language.</p>
+    <p><strong>Sparse fails:</strong> "customer says they never got the thing" → <em>non-receipt of merchandise</em>, <em>goods not received</em>. Same event, no shared terms.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The failure mode that is worse than either</div>
+Dense retrieval fails <strong>silently and confidently</strong>. A lexical search for a SKU that doesn't exist returns <em>nothing</em>, which is an honest, actionable answer. A dense search for the same SKU returns the ten nearest products with respectable-looking similarity scores — and if you threshold on score rather than on ground truth, they pass. <strong>Every dense-only system needs an answer to "what does it do when the right answer isn't in the corpus?"</strong>, and "returns the nearest thing with 0.82 cosine similarity" is the wrong one.
+</div>
+
+<h2>4. The IDF Postgres Does Not Give You</h2>
+
+<p>Week 2 Day 4 noted that <code>ts_rank_cd</code> has no IDF. That is easy to nod at, so <code>bm25_vs_tsrank.py</code> measures what it costs — by implementing BM25 and then the same scorer with IDF deleted, which isolates exactly the missing property.</p>
+
+<p>First, what <code>ts_rank_cd</code> <em>is</em>, in fairness: a <strong>cover density</strong> function. It rewards query terms appearing close together and honours the A/B/C/D labels you assign with <code>setweight()</code>. It is genuinely good at proximity. It simply has no notion of corpus-wide term rarity.</p>
+
+<div class="code-inline">python bm25_vs_tsrank.py --domain fintech
+
+  term                 in docs       IDF   contribution
+  --------------------------------------------------------------
+  merchant               5 / 5       0.087
+  chargeback             2 / 5       0.875   ########
+  reason                 2 / 5       0.875   ########
+  code                   2 / 5       0.875   ########
+  4853                   1 / 5       1.386   #############</div>
+
+<p><code>merchant</code> is in every document and contributes essentially nothing. <code>4853</code> <em>is</em> the query. Delete IDF and those two count the same.</p>
+
+<h3>But on five documents, it doesn't matter — and that is the finding</h3>
+
+<p>Run both scorers on that corpus and they agree. The answer document contains the rare term <em>and</em> the common ones, so it wins either way. <strong>Anyone who evaluates <code>ts_rank_cd</code> on a sample corpus concludes it's fine, because at that scale it is.</strong></p>
+
+<p>What a curated corpus lacks is <strong>decoys</strong> — documents that repeat your common query terms without containing the answer. Add them and sweep:</p>
+
+<div class="code-inline">python bm25_vs_tsrank.py --experiment-only
+
+  query terms      N=5        N=20       N=100     N=1,000    N=10,000
+  ---------------------------------------------------------------------
+  2               1 / 1      1 / 1       1 / 1      1 / 1       1 / 1
+  4               1 / 1      1 / 1       1 / 1      1 / 1       1 / 1
+  6               1 / 4      1 / 4       1 / 4      1 / 4       1 / 4
+  8               1 / 4      1 / 4       1 / 4      1 / 4       1 / 4
+  10              1 / 4      1 / 4       1 / 4      1 / 4       1 / 4
+  ---------------------------------------------------------------------
+  each cell is  BM25 rank / no-IDF rank</div>
+
+<div class="verdict">
+<div class="label">The measured result, which is not the one you'd guess</div>
+<strong>BM25 holds rank 1 in every cell. The no-IDF scorer loses the answer from 6 query terms onward — at every corpus size.</strong>
+<p style="margin-top:0.7rem;">So the trigger is <strong>query length, not corpus size</strong>. Once a query carries enough common words, a decoy that repeats them all outscores the one document containing the discriminator, and TF saturation means the rare term can't make up the gap without an IDF weight in front of it.</p>
+<p style="margin-bottom:0;">Corpus size sets the <em>magnitude</em>, not the threshold: the IDF spread between a rare and a common term runs from <strong>4.8× at five documents to 66× at four million</strong>. The same defect is a rounding error in development and most of your ranking quality in production.</p>
+</div>
+
+<svg viewBox="0 0 760 250" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">HOW MUCH DISCRIMINATING POWER IDF CARRIES, BY CORPUS SIZE</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">IDF of a term in 1 document vs a term in 80% of them. Ratio grows as ln(N).</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="72" fill="#333" font-weight="700">5 docs</text>
+    <rect x="110" y="61" height="14" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="42" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <rect x="110" y="61" height="14" rx="2" fill="#c8602a" width="0" opacity="0.85">
+      <animate attributeName="width" from="0" to="9" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <text x="560" y="72" fill="#555" opacity="0">ratio 4.8&#215; &#8212; invisible
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.1s"/></text>
+
+    <text x="24" y="99" fill="#333" font-weight="700">100 docs</text>
+    <rect x="110" y="88" height="14" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="127" dur="0.9s" fill="freeze" begin="0.4s"/></rect>
+    <rect x="110" y="88" height="14" rx="2" fill="#c8602a" width="0" opacity="0.85">
+      <animate attributeName="width" from="0" to="7" dur="0.9s" fill="freeze" begin="0.4s"/></rect>
+    <text x="560" y="99" fill="#555" opacity="0">ratio 18.6&#215;
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.3s"/></text>
+
+    <text x="24" y="126" fill="#333" font-weight="700">10k docs</text>
+    <rect x="110" y="115" height="14" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="265" dur="0.9s" fill="freeze" begin="0.6s"/></rect>
+    <rect x="110" y="115" height="14" rx="2" fill="#c8602a" width="0" opacity="0.85">
+      <animate attributeName="width" from="0" to="7" dur="0.9s" fill="freeze" begin="0.6s"/></rect>
+    <text x="560" y="126" fill="#555" opacity="0">ratio 39.5&#215;
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.5s"/></text>
+
+    <text x="24" y="153" fill="#a8451f" font-weight="700">4M docs</text>
+    <rect x="110" y="142" height="14" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="445" dur="0.9s" fill="freeze" begin="0.8s"/></rect>
+    <rect x="110" y="142" height="14" rx="2" fill="#c8602a" width="0" opacity="0.85">
+      <animate attributeName="width" from="0" to="7" dur="0.9s" fill="freeze" begin="0.8s"/></rect>
+    <text x="560" y="153" fill="#a8451f" font-weight="700" opacity="0">ratio 66.3&#215;
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.7s"/></text>
+  </g>
+
+  <rect x="110" y="178" width="14" height="11" fill="#1f5f8b"/>
+  <text x="130" y="188" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">IDF of a rare term (1 doc)</text>
+  <rect x="300" y="178" width="14" height="11" fill="#c8602a"/>
+  <text x="320" y="188" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">IDF of a common term (80% of docs)</text>
+
+  <text x="24" y="216" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">At production scale IDF is not a tie-breaker &#8212; it is <tspan font-weight="700">most of what ranking is</tspan>. A scorer without it is optimising something else.</text>
+  <text x="24" y="234" font-family="-apple-system,sans-serif" font-size="10" fill="#777">And it is invisible in development, because a curated corpus has no decoys and manual testing uses short queries.</text>
+</svg>
+
+<h3>What to do about it in Postgres</h3>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Fix</th><th>Cost</th><th>When</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Weight the fields.</strong> <code>setweight()</code> puts SKU/code/title at label A and body at D.</td>
+    <td class="yes">One SQL expression. No new moving parts.</td>
+    <td><strong>Start here.</strong> It doesn't restore IDF, but it approximates it for the case that matters — discriminators usually live in specific columns.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Compute IDF yourself.</strong> <code>ts_stat()</code> gives document frequencies; materialise a <code>term → idf</code> table and score against it.</td>
+    <td class="partial">Real BM25 in SQL, but the table needs refreshing as the corpus drifts — a job you now own.</td>
+    <td>When the lexical arm is load-bearing and field weighting isn't enough.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Let the dense arm carry it.</strong> If the rare term is semantically loaded, the embedding may rank it correctly and RRF lets dense win.</td>
+    <td class="no">Free, and it hides the problem rather than fixing it.</td>
+    <td>Legitimate — but only if you've <em>measured</em> that dense actually covers those queries.</td>
+  </tr>
+</table>
+
+<div class="code-inline">-- Option 1, the one to reach for first
+ALTER TABLE chunk ADD COLUMN fts tsvector
+  GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(sku,          '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(section_path, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(body,         '')), 'D')
+  ) STORED;
+
+CREATE INDEX ON chunk USING gin (fts);</div>
+
+<div class="caution">
+<div class="label">Why option 3 makes this an architecture problem, not a tuning problem</div>
+If fusion is silently compensating for a weak lexical arm, you will <strong>attribute quality to the wrong half of the system</strong> and spend a quarter tuning the wrong knob. The class most at risk is <code>NATURAL_LANGUAGE</code> — long queries made of common words plus one discriminator — which is precisely the class where teams assume dense is carrying it anyway.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>Measure the arms separately.</strong> Week 2 Day 4's per-class evaluation already gives you the harness; run each arm alone against the golden set before you look at the fused number.</p>
+</div>
+
+<h2>5. Fusion: RRF and Its One Real Weakness</h2>
+
+<p>Week 2 Day 4 used weighted Reciprocal Rank Fusion. Here is why it's the default, and what it costs you.</p>
+
+<div class="math-box">RRF(d) = &#8721;<sub>arms</sub> w<sub>arm</sub> &#183; <sup>1</sup>&#8260;<sub>(k + rank<sub>arm</sub>(d))</sub> &nbsp;&nbsp; with k &#8776; 60</div>
+
+<table class="matrix-table">
+  <tr><th>Approach</th><th>How</th><th>Advantage</th><th>Disadvantage</th></tr>
+  <tr>
+    <td><strong>Reciprocal Rank Fusion</strong></td>
+    <td>Combine <em>ranks</em>, ignore scores entirely.</td>
+    <td class="yes">Scale-free. BM25 scores are unbounded, cosine sits in [−1,1] — RRF needs no calibration and no per-corpus tuning. Robust, boringly reliable.</td>
+    <td class="no"><strong>Discards confidence.</strong> A rank-1 hit at cosine 0.95 and a rank-1 hit at 0.31 contribute identically. If the corpus contains no good answer, RRF still confidently promotes whatever ranked first.</td>
+  </tr>
+  <tr>
+    <td><strong>Score normalisation</strong></td>
+    <td>Min-max or z-score each arm's scores, then weight and sum.</td>
+    <td>Preserves confidence — a weak best-match stays weak, which lets you threshold and say "no good answer".</td>
+    <td class="no">Normalisation is per-query-batch, so scores shift with the result set. Brittle, and the tuning doesn't transfer across corpora.</td>
+  </tr>
+  <tr>
+    <td><strong>RRF + a score floor</strong></td>
+    <td>Fuse by rank, but drop any candidate whose raw score is below an arm-specific floor <em>before</em> fusing.</td>
+    <td class="yes">Keeps RRF's robustness and recovers the ability to return nothing.</td>
+    <td>Two more constants to set from your golden set.</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">The practical recommendation</div>
+<strong>RRF with a pre-fusion score floor.</strong> Pure RRF cannot express "I found nothing good" — and for insurance and fintech, <em>returning nothing</em> is a valid, often required, answer. Getting that right is worth more than any weight tuning, because it converts a confidently wrong answer into an honest escalation.
+</div>
+
+<h2>6. The Third Option: Learned Sparse</h2>
+
+<p>SPLADE and its relatives sit in a genuinely useful middle. The model predicts, for each document, a <em>weighted set of vocabulary terms</em> — including terms that never appear in the text.</p>
+
+<table class="matrix-table">
+  <tr><th></th><th>What it fixes</th><th>What it costs</th></tr>
+  <tr>
+    <td><strong>vs sparse</strong></td>
+    <td>Vocabulary mismatch. A document about "rescission" fires the term "deny claim" because the model learned they co-occur.</td>
+    <td>An inference pass per document at ingest, and per query at search time.</td>
+  </tr>
+  <tr>
+    <td><strong>vs dense</strong></td>
+    <td>Explainability — you can show which terms fired and how hard. It runs on an inverted index, so it inherits decades of retrieval engineering.</td>
+    <td>Postings lists get much longer (every doc now "contains" 200–400 terms), so the index is larger and queries touch more postings than BM25.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">Why it is not the default answer, despite being good</div>
+<strong>Postgres has no first-class support for it.</strong> You'd store term→weight maps and score them yourself, which means giving up the GIN index's query planning. The honest architectural read: learned sparse is excellent, and adopting it means adopting a dedicated search engine — which is a Week 2 Day 2 decision (a whole new system to run), not a Week 3 Day 2 one.
+<p style="margin-top:0.7rem;margin-bottom:0;">The interview-ready version: <em>"I'd know SPLADE as the option that gets you dense-like recall on an inverted index with explainability intact. I wouldn't adopt it inside Postgres — the operational argument for staying in Postgres is exactly the one it breaks."</em></p>
+</div>
+
+<h2>7. Choosing, and What to Measure</h2>
+
+<table class="matrix-table">
+  <tr><th>Situation</th><th>Answer</th><th>Why</th></tr>
+  <tr><td>Queries are identifiers, codes, SKUs, form numbers</td><td><strong>Sparse-dominant</strong> (0.7/0.3)</td><td>Dense has no useful opinion about arbitrary strings and will confidently return a neighbour.</td></tr>
+  <tr><td>Queries are natural-language questions</td><td><strong>Dense-dominant</strong> (0.3/0.7)</td><td>Vocabulary mismatch is the binding constraint — and this is the class the missing IDF hurts most.</td></tr>
+  <tr><td>Mixed traffic, no router yet</td><td><strong>Balanced RRF</strong> (0.5/0.5) + score floor</td><td>Robust default. Instrument first, route later — Week 2 Day 4 has the router.</td></tr>
+  <tr><td>Corpus is small and the miss cost is high</td><td><strong>Exact dense + BM25, no ANN</strong></td><td>Week 2 §10: under ~200k chunks, exact search is affordable and recall is 1.0 by construction.</td></tr>
+  <tr><td>Answers must be explainable to a regulator</td><td><strong>Sparse must be in the loop</strong></td><td>"These terms matched" is an auditable statement. "It was close in the space" is not.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The measurement that actually settles it</div>
+Run each arm <strong>alone</strong> against the golden set, per query class, and report three numbers per class: <strong>dense-only, sparse-only, fused.</strong> Two patterns are worth acting on:
+<p style="margin-top:0.7rem;margin-bottom:0;">If <strong>fused ≈ dense-only</strong>, your lexical arm is contributing nothing and you should find out whether it's broken (missing IDF, wrong text config, no field weights) before you accept it. If <strong>fused &lt; the better arm</strong> on some class, fusion is actively hurting there — which is an argument for routing, not for re-weighting.</p>
+</div>
+
+<h2>8. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it computes</th></tr>
+  <tr>
+    <td><code>week3/day2/bm25_vs_tsrank.py</code></td>
+    <td>Implements Okapi BM25 and the identical scorer with IDF removed, isolating the one property <code>ts_rank_cd</code> lacks. Part 1 prints per-term IDF; Part 2 shows both scorers agreeing on a curated corpus (the honest control); Part 3 adds decoy documents and sweeps corpus size × query length to find where they diverge. <code>--domain retail|insurance|fintech</code>, <code>--k1</code>, <code>--b</code>, <code>--decoys</code>, <code>--experiment-only</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week3/day2
+python bm25_vs_tsrank.py --domain fintech        # the IDF table
+python bm25_vs_tsrank.py --experiment-only       # where no-IDF loses
+python bm25_vs_tsrank.py --domain retail --b 0.0 # length norm off (chunked corpus)</div>
+
+<h2>9. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Retrieval Families Check</h3>
+
+<div class="quiz">
+<div class="q">1. Why does combining dense and sparse retrieval help more than combining two dense models?</div>
+<button data-correct="false">Because sparse retrieval is faster, so it compensates for dense latency.</button>
+<button data-correct="true">Because their failure modes are disjoint. Sparse fails on vocabulary mismatch — the answer exists in different words. Dense fails on precision of identity — exact rare strings it has no opinion about. Two dense models fail on the same queries, so ensembling them mostly averages noise.</button>
+<button data-correct="false">Because BM25 scores are calibrated, which stabilises the dense scores during fusion.</button>
+<button data-correct="false">Because sparse retrieval provides the recall and dense provides the precision.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Your chunks are all 512 tokens by construction. What should you reconsider about BM25's parameters?</div>
+<button data-correct="true">Lower <code>b</code>. Length normalisation exists to correct for variable document length, and fixed-size chunking removed the variance it corrects for. <code>b=0.75</code> is inherited from full-document retrieval; on a uniformly chunked corpus b closer to 0 is often better and is almost never tested.</button>
+<button data-correct="false">Raise <code>k₁</code>, because shorter documents need less term-frequency saturation.</button>
+<button data-correct="false">Nothing — BM25 parameters are corpus-independent.</button>
+<button data-correct="false">Disable IDF, since all chunks now have similar term distributions.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. The experiment showed the no-IDF scorer failing from 6 query terms onward at every corpus size. What is the driver?</div>
+<button data-correct="false">Corpus size — larger corpora contain more documents that can outrank the answer.</button>
+<button data-correct="true">Query length. Once a query carries enough common words, a decoy repeating all of them outscores the single document containing the rare discriminator, and TF saturation stops that one rare term from making up the gap without an IDF weight. Corpus size changes the magnitude (IDF spread 4.8× at N=5 to 66× at 4M), not the threshold.</button>
+<button data-correct="false">Length normalisation, which penalises the answer document as the corpus average shifts.</button>
+<button data-correct="false">The number of decoys, which grows proportionally with the corpus.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Why does this defect reliably survive into production?</div>
+<button data-correct="false">Because Postgres does not expose document frequencies, so it cannot be measured.</button>
+<button data-correct="true">Because development corpora are curated and contain few decoys — documents that repeat common query terms without holding the answer — and manual testing uses short queries, which stay safe. The failure needs real users typing sentences at a real corpus, which happens after launch. Hybrid fusion then hides it further by letting the dense arm win.</button>
+<button data-correct="false">Because <code>ts_rank_cd</code> only computes IDF when the GIN index is fully vacuumed.</button>
+<button data-correct="false">Because most teams set the A/B/C/D weights incorrectly.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. What is RRF's one real weakness?</div>
+<button data-correct="false">It requires both arms to return the same number of candidates.</button>
+<button data-correct="true">It discards score magnitude. A rank-1 hit at cosine 0.95 and one at 0.31 contribute identically, so RRF cannot express "the corpus contains no good answer" — it confidently promotes whatever ranked first. The fix is a pre-fusion score floor per arm, which matters most where returning nothing is the correct answer.</button>
+<button data-correct="false">It over-weights the sparse arm because BM25 scores are unbounded.</button>
+<button data-correct="false">Its <code>k</code> constant must be re-tuned for every corpus.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. You measure per class and find fused ≈ dense-only across the board. What does that mean?</div>
+<button data-correct="false">Hybrid search is working — the arms agree, which confirms both are healthy.</button>
+<button data-correct="true">The lexical arm is contributing nothing, and you should find out why before accepting it: missing IDF, wrong text search config, no field weights, or a stemming mismatch. A hybrid system whose fused score equals one arm is a single-arm system carrying the cost of two.</button>
+<button data-correct="false">The dense model is overfitted to the golden set and should be retrained.</button>
+<button data-correct="false">The RRF weights should be shifted further toward dense to match the observed behaviour.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Why is SPLADE-style learned sparse retrieval not the obvious answer for a Postgres-based system?</div>
+<button data-correct="false">Because its recall is lower than dense retrieval on natural-language queries.</button>
+<button data-correct="true">Because Postgres has no first-class support for it — you'd store term→weight maps and score them yourself, giving up GIN index query planning. Adopting it effectively means adopting a dedicated search engine, which breaks the exact operational argument that kept you in Postgres.</button>
+<button data-correct="false">Because it cannot be explained to regulators, unlike BM25.</button>
+<button data-correct="false">Because it requires GPU inference at query time, which Postgres cannot host.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help building the <code>ts_stat</code>-backed IDF table, adding a pre-fusion score floor, or running the per-arm per-class measurement against your golden set? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day1/0013-chunking-strategies.html">&larr; Day 1: Chunking Strategies</a>
+<a href="../day3/0015-reranking.html">Day 3: Reranking &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0017 — RAG Failure Modes: Irrelevant, Stale, and Contradictory</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>RAG Failure Modes — Irrelevant, Stale, and Contradictory</h1>
+<p class="subtitle">Week 3, Day 5 — the failure that passes every metric you built yesterday</p>
+
+<p>Day 4 built the measurement apparatus. Today is what it catches, what it misses, and how to tell failures apart — because the symptom "the answer was wrong" has at least six distinct causes with six different fixes.</p>
+
+<p>The bulk of the lesson is the one failure mode that <strong>passes every metric in Day 4</strong>: conflicting sources. It produces a fluent, correctly-cited answer drawn from a real retrieved document, and groundedness scores it as grounded — because it <em>is</em>.</p>
+
+<h2>1. The Triage Table</h2>
+
+<p>Start here when something is wrong. The point of this table is that the fixes are unrelated, so guessing costs weeks.</p>
+
+<table class="matrix-table">
+  <tr><th>Symptom</th><th>Stage</th><th>Diagnostic</th><th>Fix</th></tr>
+  <tr>
+    <td>Answer is vague or unhelpful</td>
+    <td>Retrieval miss</td>
+    <td><code>recall@N</code> is low. The answer is not in the candidate set.</td>
+    <td>Chunking (Day 1), hybrid weights (Day 2), larger N, query expansion.</td>
+  </tr>
+  <tr>
+    <td>Right document retrieved, ranked low</td>
+    <td>Ranking</td>
+    <td><code>recall@N</code> high, <code>nDCG@k</code> low. Big gap between them.</td>
+    <td>Rerank (Day 3). This is the one case where a reranker is the correct answer.</td>
+  </tr>
+  <tr>
+    <td>Answer contradicts the retrieved text</td>
+    <td>Generation</td>
+    <td>Low groundedness. Claims unsupported by context.</td>
+    <td>Prompt: require citation per claim, forbid outside knowledge, lower temperature.</td>
+  </tr>
+  <tr>
+    <td>Answer ignores retrieved text that was right there</td>
+    <td>Generation</td>
+    <td>Low completeness, high groundedness. It used <em>some</em> context.</td>
+    <td>Fewer, better chunks. Check position — see §3. Distractors dilute.</td>
+  </tr>
+  <tr>
+    <td>Confident answer where none exists</td>
+    <td>Generation + fusion</td>
+    <td>Fails refusal correctness on the negative set.</td>
+    <td>Pre-fusion score floor (Day 2 §5), explicit "say you don't know" instruction.</td>
+  </tr>
+  <tr>
+    <td class="no"><strong>Fluent, cited, plausible — and out of date</strong></td>
+    <td class="no"><strong>Corpus</strong></td>
+    <td class="no"><strong>Every metric passes.</strong> §5.</td>
+    <td class="no">Effective-date filter. Nothing downstream fixes it.</td>
+  </tr>
+</table>
+
+<h2>2. Retrieval Failures</h2>
+
+<table class="matrix-table">
+  <tr><th>Failure</th><th>What happens</th><th>The non-obvious part</th></tr>
+  <tr>
+    <td><strong>The miss</strong></td>
+    <td>The answer never enters the candidate set.</td>
+    <td>Bounded by <code>recall@N</code>, which is Day 3's ceiling. <em>Nothing downstream can recover it</em> — this is the only failure where adding a reranker is provably useless.</td>
+  </tr>
+  <tr>
+    <td><strong>The distractor</strong></td>
+    <td>Irrelevant-but-similar chunks fill the context.</td>
+    <td>Adding more context can make answers <em>worse</em>. More retrieved chunks is not monotonically better, and "we increased k and quality dropped" is a real and confusing result.</td>
+  </tr>
+  <tr>
+    <td><strong>The near-miss</strong></td>
+    <td>A chunk that looks right and is subtly wrong — <code>E11.9</code> instead of <code>E11.29</code>, reason code <code>4837</code> instead of <code>4853</code>.</td>
+    <td>Day 2 §3: this is dense retrieval's characteristic failure and it is <em>silent</em>. The lexical arm exists to catch it.</td>
+  </tr>
+  <tr>
+    <td><strong>Truncation at ingest</strong></td>
+    <td>The answer was split across chunk boundaries and no chunk contains it whole.</td>
+    <td>Day 1 §2: if <code>chunk size &lt; answer span</code>, containment is <strong>zero</strong>. Looks exactly like a retrieval miss and no retrieval change fixes it.</td>
+  </tr>
+</table>
+
+<h2>3. Position Matters — Lost in the Middle</h2>
+
+<p>Models attend more reliably to the beginning and end of a long context than to its middle. This has a direct, cheap consequence for how you assemble the prompt:</p>
+
+<div class="verdict">
+<div class="label">Order the context deliberately, not by rank</div>
+The naive assembly — paste chunks in descending relevance — puts your <strong>second-best</strong> chunk in the middle, which is the weakest position. <strong>Interleave instead: best first, second-best last, and the rest in between.</strong> It costs nothing, requires no model change, and it is the single cheapest quality improvement in this lesson.
+<p style="margin-top:0.7rem;margin-bottom:0;">It also raises the stakes on <code>k</code>. A long context has more middle. Day 3's argument for a smaller, better-ranked candidate set and this are the same argument.</p>
+</div>
+
+<h2>4. Staleness Has Two Forms, and Only One Was Covered</h2>
+
+<table class="matrix-table">
+  <tr><th></th><th>Index staleness</th><th>Content staleness</th></tr>
+  <tr><td><strong>What's wrong</strong></td><td>The source changed; the index hasn't caught up.</td><td>The index is perfectly current. The <em>corpus</em> contains superseded documents.</td></tr>
+  <tr><td><strong>Covered in</strong></td><td>Week 2 Day 2 (dual-write drift), Day 5 (recall decay).</td><td class="no">Nowhere yet. §5.</td></tr>
+  <tr><td><strong>Detection</strong></td><td>Reconciliation job; compare source and index checksums.</td><td class="no">Undetectable by infrastructure monitoring — nothing is out of sync.</td></tr>
+  <tr><td><strong>Fix</strong></td><td>CDC, outbox, shorter sync interval.</td><td>Effective-date filtering at query time.</td></tr>
+</table>
+
+<p>The second kind is not a bug in any component. The old version of a policy form is <em>supposed</em> to be in the corpus — you cannot delete it, because a claim filed in 2023 must be adjudicated under the 2023 wording. The corpus is correct. Retrieval is correct. The answer is wrong.</p>
+
+<h2>5. Conflicting Sources — The Failure That Passes Every Metric</h2>
+
+<p>A revised document produces several near-identical chunks: v1, v2, v3 of the same clause, differing by one sentence. And that one sentence is the entire legal content.</p>
+
+<p>Because they are near-identical, they sit almost on top of each other in embedding space. So a retrieval that finds one <strong>tends to find them all</strong> — and the model receives three versions of the same rule, is told nothing about which is in force, and picks one.</p>
+
+<svg viewBox="0 0 760 280" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THREE VERSIONS OF ONE CLAUSE, ALL CORRECTLY RETRIEVED</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Nothing is broken. Similarity is doing exactly what it is designed to do.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <rect x="24" y="60" width="330" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="34" y="74" font-weight="700" fill="#6b3fa0">v1 &#183; effective 2019&#8211;2021</text>
+    <text x="34" y="88" fill="#555">&#8220;&#8230;within two years from the Date of Issue&#8230;&#8221;</text>
+
+    <rect x="24" y="100" width="330" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="34" y="114" font-weight="700" fill="#6b3fa0">v2 &#183; effective 2021&#8211;2023</text>
+    <text x="34" y="128" fill="#555">&#8220;&#8230;within two years&#8230; except in Colorado, one year&#8230;&#8221;</text>
+
+    <rect x="24" y="140" width="330" height="34" rx="5" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="34" y="154" font-weight="700" fill="#2e6b3e">v3 &#183; effective 2023&#8211;now &#8212; THE CURRENT ONE</text>
+    <text x="34" y="168" fill="#555">&#8220;&#8230;within one year&#8230; in all states&#8230;&#8221;</text>
+
+    <text x="380" y="76" fill="#333">cosine similarity between versions:</text>
+    <text x="380" y="94" font-family="Fira Code,monospace" fill="#8c2a00" font-size="11">0.97 &#8211; 0.99</text>
+    <text x="380" y="118" fill="#333">so they rank adjacently, and</text>
+    <text x="380" y="134" fill="#333">a top-6 that finds one finds them all.</text>
+
+    <rect x="380" y="146" width="330" height="30" rx="5" fill="#a8451f" opacity="0">
+      <animate attributeName="opacity" from="0" to="0.92" dur="0.7s" fill="freeze" begin="1.3s"/></rect>
+    <text x="392" y="165" fill="#fff" font-weight="700" opacity="0">The model picks one. It is not told there was a choice.
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.6s"/></text>
+  </g>
+
+  <line x1="24" y1="194" x2="736" y2="194" stroke="#e2ded8"/>
+  <text x="24" y="216" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#333">And every Day 4 metric passes:</text>
+  <text x="24" y="234" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8226; <tspan font-weight="700">Groundedness: PASS</tspan> &#8212; the claim IS supported by a retrieved chunk. A real one. Correctly quoted.</text>
+  <text x="24" y="250" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8226; <tspan font-weight="700">Answer relevance: PASS</tspan> &#8212; it answered the question that was asked.</text>
+  <text x="24" y="266" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8226; <tspan font-weight="700">nDCG: PASS</tspan> &#8212; a relevant document was ranked first. The grader marked all three versions relevant.</text>
+</svg>
+
+<h3>How often does this happen?</h3>
+
+<div class="code-inline">python conflict_and_staleness.py --domain insurance
+
+  strategy                               conflict   wrong only   slots lost
+  --------------------------------------------------------------------------
+  nothing (the default)                    36.0%        28.9%         0.46
+  cross-encoder rerank, version-blind     100.0%         0.3%         2.95
+  version-aware dedup (keep newest)         0.0%         0.0%         0.00
+  effective-date WHERE clause               0.0%         0.0%         0.00</div>
+
+<div class="caution">
+<div class="label">The result worth staring at: reranking causes this</div>
+<strong>Insurance goes from 36% to 100%. Retail goes from 0.1% to 97.5%.</strong> A cross-encoder scores each candidate against <em>the query</em>, independently — and every version answers the query about equally well, so a reranker that is working correctly promotes <em>all of them</em>.
+<p style="margin-top:0.7rem;margin-bottom:0;">Day 3's precision win and this failure are <strong>the same mechanism seen from two sides</strong>. Retail is the alarming case: the problem is essentially absent at baseline and near-universal once you add the reranker you just spent Day 3 justifying. If you ship a reranker without version handling, you have manufactured a failure mode that did not previously exist.</p>
+</div>
+
+<h3>What actually fixes it</h3>
+
+<table class="matrix-table">
+  <tr><th>Control</th><th>Type</th><th>Effect</th><th>Note</th></tr>
+  <tr>
+    <td><strong>Effective-date <code>WHERE</code> clause</strong></td>
+    <td class="yes">Prevention</td>
+    <td class="yes">Conflicts → 0%</td>
+    <td>One indexed predicate. Superseded versions never become candidates, so nothing downstream can promote them.</td>
+  </tr>
+  <tr>
+    <td><strong>Version-aware dedup</strong></td>
+    <td class="partial">Prevention (post hoc)</td>
+    <td class="yes">Conflicts → 0%</td>
+    <td>Fallback when "current" isn't expressible as a date. <strong>Must keep the newest, not the highest-scoring</strong> — retrieval score says nothing about which version is in force.</td>
+  </tr>
+  <tr>
+    <td><strong>"Cite the effective date and prefer the newest"</strong></td>
+    <td class="no">Detection only</td>
+    <td class="no">Cannot fix 28.9%</td>
+    <td>Belongs in the prompt anyway. But it can only choose among what was retrieved — and in 28.9% of insurance queries the context held a version <em>without</em> the current one. No instruction helps when the right text isn't there.</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">Detection vs prevention — the distinction an audit will ask about</div>
+The prompt-level fix is a <strong>detection</strong> control: it surfaces the ambiguity so a human sees there was a choice. The date filter is a <strong>prevention</strong> control: the wrong version never reaches the model. When a regulator asks "how do you ensure the current form was used?", <em>"we ask the model to prefer the newest"</em> is not an answer. <em>"Superseded versions are excluded by an indexed predicate at query time"</em> is.
+</div>
+
+<h3>The as-of date is the load-bearing detail</h3>
+
+<div class="code-inline">-- Week 2 Day 1 built this schema. Here is what it was for.
+ALTER TABLE chunk ADD COLUMN clause_key     text;   -- stable identity across versions
+ALTER TABLE chunk ADD COLUMN doc_version    int;
+ALTER TABLE chunk ADD COLUMN effective_from date;
+ALTER TABLE chunk ADD COLUMN effective_to   date;   -- NULL = currently in force
+ALTER TABLE chunk ADD COLUMN jurisdiction   text;
+
+CREATE INDEX ON chunk (clause_key, effective_from DESC);
+
+-- every retrieval carries an as-of date, and it is NOT today()
+WHERE effective_from &lt;= :as_of
+  AND (effective_to IS NULL OR effective_to &gt; :as_of)
+  AND jurisdiction IN (:state, 'ALL')</div>
+
+<div class="caution">
+<div class="label">Always filtering to "current" is also wrong</div>
+For a claim filed in 2023, the question is what the policy said <em>then</em>. A system hardcoded to <code>today()</code> fails quietly and in the direction that loses litigation. <strong>The as-of date is an input to the query, not a constant</strong>, and defaulting it to today is a decision that should be made explicitly and written down.
+<p style="margin-top:0.7rem;margin-bottom:0;">Note also that this is the <em>same predicate</em> Week 2 §10 identified as the load-bearing architecture question. Filter selectivity decides whether you need an ANN index at all; here the same clause is a correctness control. It earns its keep twice.</p>
+</div>
+
+<h2>6. Why Day 4's Metrics Cannot See This</h2>
+
+<p>Every other failure in this lesson announces itself. Retrieval misses produce visibly unhelpful answers. Hallucinations contradict the source. Stale indexes produce complaints. A version conflict produces a <strong>fluent, well-cited, plausible answer drawn from a real document that was true last year.</strong></p>
+
+<div class="verdict">
+<div class="label">The eval you have to build on purpose</div>
+Questions whose answer <strong>changed between versions</strong>, scored against the version effective on a stated as-of date. Twenty of them is enough to know whether you have the problem.
+<p style="margin-top:0.7rem;margin-bottom:0;">If your golden set contains no such questions, you have <em>no evidence at all</em> about this failure mode — not weak evidence, none. And your relevance graders will have made it worse: shown three versions of a clause, a grader marks all three relevant, because they are. The labelling process itself erases the distinction.</p>
+</div>
+
+<h2>7. Three Domains</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">2 versions &#183; k=8<br>baseline 0.1% &#8594; reranked 97.5%</span></p>
+    <p>Policy pages get revised; product copy gets duplicated across variants.</p>
+    <p><strong>The fix is cheaper here:</strong> retail can simply <em>delete</em> the old version — an option regulated domains do not have.</p>
+    <p>But note the reranker effect. Do not assume low stakes means no problem.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">4 versions &#183; k=6<br>baseline 36% &#183; wrong-only 28.9%</span></p>
+    <p>Forms are amended and re-filed <em>by state</em>. Four versions of a suicide exclusion is normal.</p>
+    <p><strong>A version conflict here is a regulatory finding</strong>, not a bad search result.</p>
+    <p>Old versions cannot be deleted — claims are adjudicated under the wording in force at the time.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><span class="kv">3 versions &#183; k=6</span></p>
+    <p>Network rules are revised on a published schedule; old reason-code tables must stay.</p>
+    <p>Disputes are adjudicated under the rules in force <strong>at transaction time</strong> — so the as-of date comes from the transaction, not the request.</p>
+    <p>This is the clearest case that <code>today()</code> is the wrong default.</p>
+  </div>
+</div>
+
+<h2>8. The Runbook</h2>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Check</th><th>Cost</th></tr>
+  <tr><td>1</td><td>Is <code>recall@N</code> the problem? Compute it before anything else.</td><td>Free — you have the golden set.</td></tr>
+  <tr><td>2</td><td>Is the gap between <code>recall@N</code> and <code>nDCG@k</code> large? Then it's ranking, and Day 3 applies.</td><td>Free.</td></tr>
+  <tr><td>3</td><td>Does the corpus contain multiple versions of anything? If yes, add the effective-date predicate <em>before</em> shipping a reranker.</td><td>One indexed column and a <code>WHERE</code> clause.</td></tr>
+  <tr><td>4</td><td>Does the golden set contain questions whose answers changed between versions? If not, you have no evidence about §5.</td><td>~20 labelled questions.</td></tr>
+  <tr><td>5</td><td>Does it contain unanswerable questions? If not, refusal correctness is unmeasured.</td><td>~30 questions with answers removed.</td></tr>
+  <tr><td>6</td><td>Is context ordered best-first-and-last rather than by rank?</td><td>Free. Do it today.</td></tr>
+  <tr><td>7</td><td>Is there a pre-fusion score floor, so "nothing good" is expressible?</td><td>Two constants from the golden set (Day 2 §5).</td></tr>
+</table>
+
+<h2>9. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it computes</th></tr>
+  <tr>
+    <td><code>week3/day5/conflict_and_staleness.py</code></td>
+    <td>Simulates retrieval over a corpus containing multiple versions of the same clause and measures how often the context ends up holding two or more of them, how often it holds a superseded version <em>without</em> the current one, and how many top-k slots are lost to redundancy. Compares four strategies including a cross-encoder rerank — which makes it dramatically worse. <code>--domain retail|insurance|fintech-docs</code>, <code>--versions</code>, <code>--k</code>, <code>--version-noise</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week3/day5
+python conflict_and_staleness.py --domain insurance   # 36% baseline, 100% reranked
+python conflict_and_staleness.py --domain retail      # 0.1% -> 97.5% from reranking alone
+python conflict_and_staleness.py --versions 6 --k 8   # more versions, same conclusion
+python conflict_and_staleness.py --version-noise 0.20 # if versions were less similar</div>
+
+<h2>10. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Failure Modes Check</h3>
+
+<div class="quiz">
+<div class="q">1. Answers are vague. <code>recall@50</code> is 0.94 and <code>nDCG@8</code> is 0.51. What is the failure?</div>
+<button data-correct="false">Retrieval — the candidate set doesn't contain the answers.</button>
+<button data-correct="true">Ranking. The answer is being retrieved (recall is high) but ranked poorly (nDCG is low), and the gap between them is the headroom. This is the one situation where a reranker is the provably correct fix — Day 3.</button>
+<button data-correct="false">Generation — the model is ignoring the context it was given.</button>
+<button data-correct="false">Chunking — the answers are split across chunk boundaries.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. You add a cross-encoder reranker to the retail system. Version-conflict rate goes from 0.1% to 97.5%. Is the reranker broken?</div>
+<button data-correct="false">Yes — a correctly-tuned cross-encoder would score near-duplicates differently.</button>
+<button data-correct="true">No. It's working exactly as designed. It scores each candidate against the query independently, and every version of a clause answers the query about equally well — so it promotes all of them. Day 3's precision win and this failure are the same mechanism seen from two sides. Ship version handling <em>before</em> the reranker, not after.</button>
+<button data-correct="false">Yes — the reranker should be deduplicating near-identical candidates internally.</button>
+<button data-correct="false">No, but it's harmless: the model will pick the most relevant version anyway.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Why does groundedness score a version-conflict answer as PASS?</div>
+<button data-correct="false">Because groundedness only checks the first retrieved chunk.</button>
+<button data-correct="true">Because the claim genuinely <em>is</em> supported by a retrieved chunk — a real document, correctly quoted. Groundedness asks "is this claim in the context?", not "is this the version currently in force". The metric is working; it just doesn't measure this.</button>
+<button data-correct="false">Because groundedness is computed at the answer level rather than the claim level.</button>
+<button data-correct="false">Because the LLM judge cannot distinguish near-identical documents.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. "Instruct the model to cite the effective date and prefer the newest version." What does this achieve?</div>
+<button data-correct="false">It fixes the problem — the model will consistently pick the current version.</button>
+<button data-correct="true">It's a detection control, not a prevention control. It surfaces ambiguity so a human sees there was a choice, but it can only choose among what was retrieved — and in 28.9% of insurance queries the context held a superseded version <em>without</em> the current one. No instruction helps when the right text isn't there.</button>
+<button data-correct="false">Nothing useful; it should be removed to save prompt tokens.</button>
+<button data-correct="false">It fixes the ranking but not the retrieval.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Version-aware dedup keeps one version per clause. Which one, and why does it matter?</div>
+<button data-correct="false">The highest-scoring one — retrieval score reflects relevance to the query.</button>
+<button data-correct="true">The newest (or the one effective on the as-of date). Retrieval score says nothing about which version is legally in force, so keeping the top-scoring version is the obvious implementation and is wrong — it silently reintroduces the failure it was built to prevent.</button>
+<button data-correct="false">The longest one, since it most likely contains the full clause with exceptions.</button>
+<button data-correct="false">Whichever appears in the most jurisdictions.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Why is hardcoding the as-of date to <code>today()</code> wrong?</div>
+<button data-correct="false">It isn't — the current version is always the correct one to retrieve.</button>
+<button data-correct="true">Because a claim filed in 2023 must be adjudicated under the 2023 wording, and a dispute under the network rules in force at transaction time. The as-of date is an <em>input to the query</em>, sourced from the business event. Defaulting it to today fails quietly and in the direction that loses litigation.</button>
+<button data-correct="false">Because <code>today()</code> is not immutable and so cannot be used in a generated column.</button>
+<button data-correct="false">Because it prevents the query planner from using the index.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Your relevance graders labelled all three versions of a clause as relevant. What has that done?</div>
+<button data-correct="false">Nothing — all three are genuinely relevant to the query.</button>
+<button data-correct="true">It erased the distinction the eval needed to measure. With all versions marked relevant, nDCG scores a superseded-version answer as correct, so the golden set cannot detect version conflicts at all. Catching this needs purpose-built questions whose answers <em>changed</em> between versions, graded against a stated as-of date.</button>
+<button data-correct="false">It inflated recall@N, making the ceiling look higher than it is.</button>
+<button data-correct="false">It biased the reranker training data toward near-duplicates.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">8. What is the cheapest quality improvement in this lesson?</div>
+<button data-correct="false">Increasing k so more relevant context reaches the model.</button>
+<button data-correct="true">Ordering the context best-first and second-best-last instead of by descending rank. Models attend less reliably to the middle of a long context, and naive rank-order assembly puts your second-best chunk in the weakest position. It costs nothing and requires no model change.</button>
+<button data-correct="false">Lowering temperature to zero.</button>
+<button data-correct="false">Switching to a larger generation model.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help adding the effective-date predicate to an existing chunk table, building the version-change eval questions, or designing the as-of date plumbing from your claim/transaction records? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day4/0016-rag-evaluation.html">&larr; Day 4: RAG Evaluation</a>
+<a href="../day6-7/0018-checkpoint-retrieval-redesign.html">Day 6-7: Checkpoint &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

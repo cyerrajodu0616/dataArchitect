@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0015 — Reranking: The Ceiling, The Bill, and Where They Cross</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Reranking — The Ceiling, The Bill, and Where They Cross</h1>
+<p class="subtitle">Week 3, Day 3 — why a reranker cannot fix recall, and how to pick N without overpaying</p>
+
+<p>A reranker is a second-stage model that re-scores the candidates the first stage returned. It is the highest-leverage single addition to most RAG pipelines, and it is also the component most often added for the wrong reason.</p>
+
+<div class="verdict">
+<div class="label">The sentence that settles most reranking arguments</div>
+<strong>A reranker improves precision. It cannot improve recall, ever, because it only sees what it was handed.</strong> Your end-to-end quality is bounded above by <code>recall@N</code> of stage one. If <code>recall@100 = 0.72</code>, then 28% of queries are unanswerable no matter how good the reranker is — and the reranker will spend real money reordering wrong answers.
+</div>
+
+<h2>1. Why a Second Stage Can Know More Than the First</h2>
+
+<p>This is not "a bigger model is better." It is a structural difference in what the model is allowed to look at.</p>
+
+<table class="matrix-table">
+  <tr><th></th><th>Bi-encoder (retrieval)</th><th>Cross-encoder (reranking)</th></tr>
+  <tr>
+    <td><strong>Input</strong></td>
+    <td>Query and document embedded <em>separately</em>, never in the same forward pass.</td>
+    <td>Query and document concatenated into <em>one</em> input. Attention runs across both.</td>
+  </tr>
+  <tr>
+    <td><strong>What it can represent</strong></td>
+    <td>A fixed vector per document, computed before your query existed. It must be a good summary for <em>every possible</em> query.</td>
+    <td>A score for <em>this</em> pair. It can notice that the query's "not" negates the document's claim, or that a number matches.</td>
+  </tr>
+  <tr>
+    <td><strong>Cost</strong></td>
+    <td class="yes">Documents embedded once at ingest. Query cost is one forward pass, independent of corpus size.</td>
+    <td class="no"><strong>N forward passes per query.</strong> Nothing can be precomputed — the pair didn't exist until the query arrived.</td>
+  </tr>
+  <tr>
+    <td><strong>Scales to</strong></td>
+    <td>Millions to billions of documents.</td>
+    <td>Tens to hundreds of candidates.</td>
+  </tr>
+</table>
+
+<p>That asymmetry <em>is</em> the architecture. You cannot cross-encode 4M products, and you don't have to — you only need to reorder the handful the first stage already narrowed to.</p>
+
+<div class="caution">
+<div class="label">The consequence people miss</div>
+Because a bi-encoder embedding is computed before the query exists, it must be a compromise across all possible queries about that document. <strong>That is the same tension as Day 1 §1</strong> — one object serving two masters — and it is why reranking helps even when retrieval is "working". The first stage isn't wrong; it's answering a harder question than the second stage is.
+</div>
+
+<h2>2. The Funnel, and the Ceiling It Imposes</h2>
+
+<svg viewBox="0 0 760 260" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs><marker id="rk" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker></defs>
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE RETRIEVAL FUNNEL &#8212; AND WHERE THE ANSWER CAN BE LOST</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Anything dropped at a stage is gone. Later stages cannot recover it.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <rect x="24" y="62" width="150" height="46" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="99" y="80" text-anchor="middle" font-weight="700" fill="#333">4,000,000</text>
+    <text x="99" y="96" text-anchor="middle" fill="#777">the corpus</text>
+
+    <line x1="176" y1="85" x2="208" y2="85" stroke="#8a8578" stroke-width="1.5" marker-end="url(#rk)"/>
+
+    <rect x="212" y="62" width="160" height="46" rx="6" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="292" y="80" text-anchor="middle" font-weight="700" fill="#1f5f8b">N = 50 candidates</text>
+    <text x="292" y="96" text-anchor="middle" fill="#555">ANN + BM25, fused</text>
+
+    <line x1="374" y1="85" x2="406" y2="85" stroke="#8a8578" stroke-width="1.5" marker-end="url(#rk)"/>
+
+    <rect x="410" y="62" width="160" height="46" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="490" y="80" text-anchor="middle" font-weight="700" fill="#333">cross-encoder</text>
+    <text x="490" y="96" text-anchor="middle" fill="#777">50 forward passes</text>
+
+    <line x1="572" y1="85" x2="604" y2="85" stroke="#8a8578" stroke-width="1.5" marker-end="url(#rk)"/>
+
+    <rect x="608" y="62" width="128" height="46" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="672" y="80" text-anchor="middle" font-weight="700" fill="#2e6b3e">k = 8</text>
+    <text x="672" y="96" text-anchor="middle" fill="#555">into the prompt</text>
+  </g>
+
+  <rect x="212" y="128" width="160" height="26" rx="4" fill="#a8451f" opacity="0">
+    <animate attributeName="opacity" from="0" to="0.9" dur="0.6s" fill="freeze" begin="1.2s"/></rect>
+  <text x="292" y="146" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#fff" opacity="0">recall@50 = 0.846
+    <animate attributeName="opacity" from="0" to="1" dur="0.6s" fill="freeze" begin="1.4s"/></text>
+  <text x="392" y="146" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a8451f" font-weight="700" opacity="0">&#8592; THIS IS THE CEILING
+    <animate attributeName="opacity" from="0" to="1" dur="0.6s" fill="freeze" begin="1.7s"/></text>
+
+  <text x="24" y="182" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">15.4% of queries have <tspan font-weight="700">no correct document among the 50</tspan>. For those, the cross-encoder is choosing the best of a bad set.</text>
+  <text x="24" y="202" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">A perfect reranker scores 0.846. A useless one scores whatever the first stage's top-8 was. <tspan font-weight="700">The gap between those two is the entire prize.</tspan></text>
+  <text x="24" y="228" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a8451f">So the first number to measure is not a reranker metric at all &#8212; it is <tspan font-weight="700">recall@N of the stage you already have</tspan>.</text>
+  <text x="24" y="246" font-family="-apple-system,sans-serif" font-size="10" fill="#777">You already have the golden set from Week 2 Day 5. Computing recall@N costs nothing.</text>
+</svg>
+
+<div class="math-box">
+achievable quality &#8804; recall@N &nbsp;&nbsp;&nbsp; prize = recall@N &#8722; recall@k
+</div>
+
+<p>Two numbers, both cheap to compute, and between them they tell you whether to build a reranker at all:</p>
+
+<table class="matrix-table">
+  <tr><th>What you measure</th><th>What it tells you</th><th>What to do</th></tr>
+  <tr><td><code>recall@N</code> is low (&lt; 0.90)</td><td>The answer often isn't in the candidate set.</td><td class="no"><strong>Stop.</strong> Fix retrieval — chunking, hybrid weights, query expansion. A reranker reorders wrong answers.</td></tr>
+  <tr><td><code>recall@k</code> ≈ <code>recall@N</code></td><td>The first stage already puts the answer in the top k.</td><td class="no"><strong>Stop.</strong> There is no headroom; a reranker is pure latency and cost.</td></tr>
+  <tr><td>Large gap between them</td><td>The answer is being retrieved but ranked badly.</td><td class="yes"><strong>Rerank.</strong> This is exactly the situation the tool exists for.</td></tr>
+</table>
+
+<h2>3. Cost Is Linear. Quality Saturates. Therefore There Is an Optimum.</h2>
+
+<p>This is the part that decides N, and it follows from two facts that are true of every reranker:</p>
+
+<ul>
+<li><strong>Cost is linear in N.</strong> N candidates means N forward passes. Double N, double the GPU fleet.</li>
+<li><strong>The recall curve saturates.</strong> Going from 10 to 50 candidates recovers a lot; going from 500 to 1000 recovers almost nothing.</li>
+</ul>
+
+<p>A linear cost against a saturating benefit <strong>guarantees</strong> an efficiency optimum strictly below whatever your latency budget allows. Which means the common decision procedure — <em>"set N to whatever fits the latency budget"</em> — is reliably wrong, and reliably expensive.</p>
+
+<svg viewBox="0 0 760 300" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">RETAIL &#8212; WHAT EACH +0.01 OF CEILING COSTS, BY N</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">500 QPS, MiniLM cross-encoder on L4-class GPUs. Both bars grow; only one of them buys anything.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="72" font-weight="700" fill="#333">N=10</text>
+    <rect x="86" y="61" height="14" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="7" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <rect x="86" y="61" height="14" rx="2" fill="none"/>
+    <text x="110" y="72" fill="#555" opacity="0">$1,752/mo &#183; ceiling 0.710 &#183; <tspan font-weight="700">$1,883 per +0.01</tspan>
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.0s"/></text>
+
+    <text x="24" y="99" font-weight="700" fill="#2e6b3e">N=50</text>
+    <rect x="86" y="88" height="14" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="31" dur="0.9s" fill="freeze" begin="0.4s"/></rect>
+    <text x="130" y="99" fill="#2e6b3e" font-weight="700" opacity="0">$7,592/mo &#183; ceiling 0.846 &#183; $523 per +0.01 &#8592; BEST VALUE
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.2s"/></text>
+
+    <text x="24" y="126" font-weight="700" fill="#333">N=100</text>
+    <rect x="86" y="115" height="14" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="60" dur="0.9s" fill="freeze" begin="0.6s"/></rect>
+    <text x="158" y="126" fill="#555" opacity="0">$14,600/mo &#183; ceiling 0.930 &#183; $637 per +0.01
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.4s"/></text>
+
+    <text x="24" y="153" font-weight="700" fill="#a8451f">N=200</text>
+    <rect x="86" y="142" height="14" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="120" dur="0.9s" fill="freeze" begin="0.8s"/></rect>
+    <text x="218" y="153" fill="#a8451f" font-weight="700" opacity="0">$29,200/mo &#183; ceiling 0.986 &#183; $1,546 per +0.01
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+    <text x="86" y="171" fill="#a8451f" font-size="10" opacity="0">the largest N that fits the 150 ms budget &#8212; and 3&#215; the unit cost of N=50
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.9s"/></text>
+  </g>
+
+  <line x1="24" y1="192" x2="736" y2="192" stroke="#e2ded8"/>
+
+  <text x="24" y="216" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#333">Going from N=50 to N=200</text>
+  <text x="24" y="236" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">costs an extra <tspan font-weight="700" fill="#a8451f">$21,608/month</tspan> and buys <tspan font-weight="700">+0.140</tspan> of ceiling &#8212; and only a fraction of that ceiling is ever realised.</text>
+  <text x="24" y="258" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">For scale: Week 2 priced the entire 4M-vector pgvector index at <tspan font-weight="700">$950/month</tspan>. The reranker is the expensive component now.</text>
+  <text x="24" y="284" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">Pick N on cost per unit of ceiling, not on what fits.</text>
+</svg>
+
+<div class="code-inline">python rerank_economics.py --domain retail
+
+       N   recall@N   headroom   rerank ms   total ms   fits?     $/month   $ per +0.01
+  ------------------------------------------------------------------------------------
+      10      0.710     +0.009         5.0       30.0     yes       1,752         1,883
+      25      0.771     +0.070        12.5       37.5     yes       4,088           580
+      50      0.846     +0.145        25.0       50.0     yes       7,592           523
+     100      0.930     +0.229        50.0       75.0     yes      14,600           637
+     200      0.986     +0.285       100.0      125.0     yes      29,200         1,025
+     500      0.999     +0.298       250.0      275.0      NO      73,000         2,447</div>
+
+<div class="verdict">
+<div class="label">Read the last column, not the third</div>
+The <code>$ per +0.01</code> column is U-shaped and bottoms out at <strong>N=50</strong>. Below that you're paying fixed GPU capacity for very little candidate set; above it you're on the flat part of the recall curve. <strong>N=50 at $523 per point beats N=200 at $1,546 — and N=200 is what "make it fit the budget" would have chosen.</strong>
+</div>
+
+<h2>4. Reranker Options</h2>
+
+<table class="matrix-table">
+  <tr><th>Option</th><th>Throughput</th><th>Advantages</th><th>Disadvantages</th><th>Choose when</th></tr>
+  <tr>
+    <td><strong>MiniLM cross-encoder</strong> (6-layer)</td>
+    <td>~2,000 pairs/s on an L4</td>
+    <td class="yes">Most of the quality of a bigger model at a quarter of the compute. Small enough to co-locate.</td>
+    <td>Short input limit; long chunks get truncated, which silently discards the end of a clause.</td>
+    <td class="yes"><strong>The default.</strong> Start here.</td>
+  </tr>
+  <tr>
+    <td><strong>Base cross-encoder</strong> (12-layer, 512 tok)</td>
+    <td>~500 pairs/s</td>
+    <td>Better ordering, handles longer chunks without truncation.</td>
+    <td>4× the compute for a modest gain. At high QPS that is a 4× fleet.</td>
+    <td>Low QPS, long chunks, high miss cost.</td>
+  </tr>
+  <tr>
+    <td><strong>Listwise LLM</strong></td>
+    <td>Bounded by prompt length</td>
+    <td>Best quality available. Sees all candidates <em>together</em>, so it can reason comparatively rather than scoring pairs in isolation.</td>
+    <td class="no">Latency scales with N × chunk tokens. See the reality check below.</td>
+    <td>Offline evaluation, golden-set labelling, or genuinely low-volume high-value queries.</td>
+  </tr>
+  <tr>
+    <td><strong>ColBERT / late interaction</strong></td>
+    <td>Between the two</td>
+    <td>Per-token embeddings with interaction at query time — much of the cross-encoder's benefit, precomputable.</td>
+    <td>Storage explodes: one vector <em>per token</em>, not per chunk. That's a Week 2 capacity problem all over again.</td>
+    <td>You need cross-encoder quality at bi-encoder latency and can pay in storage.</td>
+  </tr>
+</table>
+
+<h3>The LLM reranker reality check</h3>
+
+<p>"We have a 2-second latency budget, so we can afford an LLM reranker" sounds reasonable and is wrong. Run it:</p>
+
+<div class="code-inline">python rerank_economics.py --domain insurance --reranker llm
+
+       N   recall@N   headroom   rerank ms   total ms   fits?     $/month   $ per +0.01
+  ------------------------------------------------------------------------------------
+      10      0.620     +0.022      1280.0     1340.0     yes      16,589         7,707
+      25      0.691     +0.092      3200.0     3260.0      NO      41,472         4,485
+      50      0.781     +0.182      6400.0     6460.0      NO      82,944         4,545
+     100      0.890     +0.292     12800.0    12860.0      NO     165,888         5,690</div>
+
+<div class="caution">
+<div class="label">A generous latency budget does not imply an LLM reranker fits</div>
+At 512-token chunks, <strong>even N=25 blows a 2-second budget</strong> — the binding constraint is prompt length, not QPS. And N=10 costs <strong>$16,589/month against $584 for a cross-encoder at N=100</strong>, which is 28× the price for a <em>worse</em> ceiling (0.620 vs 0.890), because it can only afford to look at 10 candidates.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is the general shape of the LLM-reranker argument: it's the best reranker per candidate and the worst per dollar, so it wins only where N can be small — which is where you needed it least. Its real home is <strong>offline</strong>: labelling golden sets and evaluating other rerankers, where latency doesn't exist and quality is the whole point.</p>
+</div>
+
+<h2>5. Rerank Only What Needs It</h2>
+
+<p>Retail's $7,592/month assumes reranking <em>every</em> query. It shouldn't. Week 2 Day 4 built a query-class router; this is its second job.</p>
+
+<table class="matrix-table">
+  <tr><th>Query class</th><th>Rerank?</th><th>Why</th></tr>
+  <tr><td><code>EXACT_ID</code> — SKU, form number, reason code</td><td class="no">No</td><td>The lexical arm either found it or it doesn't exist. There is nothing to reorder, and headroom is ~0.</td>
+  <tr><td><code>NAVIGATIONAL</code> — brand or category browse</td><td class="no">No</td><td>Ordering is driven by business rules — stock, margin, popularity — not semantic relevance.</td></tr>
+  <tr><td><code>NATURAL_LANGUAGE</code> — questions, descriptions</td><td class="yes">Yes</td><td>Exactly the class with a large <code>recall@k</code> → <code>recall@N</code> gap. All of the headroom lives here.</td></tr>
+  <tr><td><code>AMBIGUOUS</code> — short, underspecified</td><td class="yes">Yes</td><td>First-stage ordering is close to arbitrary; the reranker has the most to add.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">What routing is worth here</div>
+If 40% of retail traffic is <code>EXACT_ID</code> or <code>NAVIGATIONAL</code>, routing drops the fleet from 13 GPUs to 8 — <strong>$7,592 → $4,672/month, a 38% saving</strong> — with <em>no</em> quality loss, because those classes had no headroom to begin with. That is a better return than any amount of model tuning, and it reuses a component you already built.
+<p style="margin-top:0.7rem;margin-bottom:0;">It is also the honest answer to "reranking is too expensive at our QPS": usually it is too expensive <em>applied indiscriminately</em>, and affordable applied where it works.</p>
+</div>
+
+<h2>6. Three Domains, Three Different Calls</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">500 QPS &#183; 150 ms<br>r@10 0.71 &#183; r@100 0.93</span></p>
+    <p><strong>N=50, MiniLM, routed.</strong> $7,592/mo unrouted, $4,672 routed.</p>
+    <p>QPS is the binding constraint, not quality. The reranker costs <strong>8× the entire vector index</strong>.</p>
+    <p>This is an economics problem before it is a relevance problem.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">20 QPS &#183; 2,000 ms<br>r@10 0.62 &#183; r@100 0.89</span></p>
+    <p><strong>N=100, MiniLM.</strong> $584/mo, $20 per +0.01 — the cheapest quality on the page.</p>
+    <p>27 points of headroom between r@10 and r@100 sitting unused. Textbook case for reranking.</p>
+    <p><strong>But r@100 = 0.89</strong> → 11% unanswerable. Fix retrieval <em>too</em>.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech documents</div>
+    <p><span class="kv">30 QPS &#183; 1,500 ms<br>r@10 0.68 &#183; r@100 0.91</span></p>
+    <p><strong>N=50, MiniLM.</strong> $584/mo, $37 per +0.01.</p>
+    <p>One GPU with room to spare — below one machine's capacity, more candidates are free at the margin.</p>
+    <p>The decision is which model, not whether.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The GPU-granularity effect worth knowing</div>
+Insurance costs the same $584/month at N=10 and at N=100, because both fit inside <strong>one</strong> GPU. Below a machine's capacity, additional candidates are <em>free at the margin</em> — so the efficiency argument in §3 inverts and you should take the largest N that still fits one machine. Check where your step function is before optimising against a smooth curve that isn't there.
+</div>
+
+<h2>7. The Order to Do Things In</h2>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Step</th><th>Why this order</th></tr>
+  <tr><td>1</td><td><strong>Measure <code>recall@N</code> of stage one.</strong></td><td>It's the ceiling, it costs nothing to compute, and you already have the golden set from Week 2 Day 5.</td></tr>
+  <tr><td>2</td><td><strong>If <code>recall@100</code> &lt; 0.90 — stop and fix retrieval.</strong></td><td>Chunking (Day 1), hybrid weighting (Day 2), query expansion. A reranker on a candidate set without the answer reorders wrong answers at full price.</td></tr>
+  <tr><td>3</td><td><strong>If <code>recall@k</code> ≈ <code>recall@N</code> — stop.</strong></td><td>No headroom. You'd be buying latency.</td></tr>
+  <tr><td>4</td><td><strong>Pick N on cost per unit of ceiling.</strong></td><td>Linear cost against a saturating curve means the optimum is below your latency limit, not at it.</td></tr>
+  <tr><td>5</td><td><strong>Route: rerank only the classes with headroom.</strong></td><td>Typically ~38% off the bill for zero quality loss.</td></tr>
+  <tr><td>6</td><td><strong>Measure the realised gain, per class.</strong></td><td>The ceiling is arithmetic; the gain is empirical. That's Day 4.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The interview answer</div>
+"Reranking improves precision, never recall — so the first thing I'd measure is <code>recall@N</code> of the first stage, because that's a hard ceiling on anything the reranker can achieve. If <code>recall@100</code> is below about 0.90 I'd fix retrieval before adding a second stage at all. If there's a real gap between <code>recall@k</code> and <code>recall@N</code>, that gap is the prize and reranking is the right tool. I'd size N on cost per unit of recall rather than on what fits the latency budget — cost is linear in N and the recall curve saturates, so the efficient point is always below the limit. On our retail numbers that's N=50 at about $520 per point of ceiling, versus $1,550 at N=200, which is what 'make it fit' would have picked. Then I'd route, so we only rerank the classes that have headroom — exact-ID lookups have none."
+</div>
+
+<h2>8. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it computes</th></tr>
+  <tr>
+    <td><code>week3/day3/rerank_economics.py</code></td>
+    <td>Sweeps candidate count N against the ceiling (<code>recall@N</code>), latency, monthly cost, and <strong>cost per +0.01 of ceiling</strong>. Fits a saturating recall curve through your two measured points, picks N on marginal efficiency rather than on what fits, and warns when <code>recall@100</code> is too low for reranking to be the right investment. <code>--domain</code>, <code>--reranker minilm-gpu|base-gpu|minilm-cpu|llm</code>, <code>--recall-10</code>, <code>--recall-100</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week3/day3
+python rerank_economics.py --domain retail             # N=50 beats N=200 by 3x
+python rerank_economics.py --domain insurance          # cheapest quality here
+python rerank_economics.py --domain insurance --reranker llm   # doesn't fit
+python rerank_economics.py --recall-10 0.55 --recall-100 0.72  # fix retrieval first
+python rerank_economics.py --domain insurance --reranker minilm-cpu  # no GPU</div>
+
+<h2>9. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Reranking Check</h3>
+
+<div class="quiz">
+<div class="q">1. Your reranker is excellent but end-to-end quality is stuck at 0.72. What is the first thing to check?</div>
+<button data-correct="false">Whether the cross-encoder is truncating long chunks.</button>
+<button data-correct="true">Whether <code>recall@N</code> of the first stage is 0.72. A reranker only sees the candidates it was handed, so <code>recall@N</code> is a hard ceiling — if 28% of queries have no correct document in the candidate set, no reranker quality can help. Fix retrieval before tuning the second stage.</button>
+<button data-correct="false">Whether N is large enough to give the reranker room to work.</button>
+<button data-correct="false">Whether the reranker's scores need calibrating against the first-stage scores.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Why is "set N to whatever fits the latency budget" reliably the wrong way to size a reranker?</div>
+<button data-correct="false">Because latency budgets are measured at P50 and rerankers are tail-heavy.</button>
+<button data-correct="true">Because cost is linear in N while the recall curve saturates. A linear cost against a saturating benefit guarantees an efficiency optimum strictly below the limit. On the retail numbers that's N=50 at $523 per +0.01 of ceiling versus N=200 at $1,546 — the budget-filling choice costs 3× per unit of quality.</button>
+<button data-correct="false">Because larger candidate sets increase the chance of the reranker promoting a false positive.</button>
+<button data-correct="false">Because the latency budget should be reserved for generation, not retrieval.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. You have a 2-second latency budget and 20 QPS. Does that mean you can afford a listwise LLM reranker?</div>
+<button data-correct="false">Yes — 2 seconds is generous and 20 QPS is low, so both constraints are satisfied.</button>
+<button data-correct="true">No. The binding constraint is prompt length, not QPS. At 512-token chunks even N=25 needs 3.2 s. N=10 fits but costs $16,589/month against $584 for a cross-encoder at N=100 — 28× the price for a worse ceiling (0.62 vs 0.89), because it can only look at 10 candidates.</button>
+<button data-correct="false">Yes, provided you cache the reranker outputs by query hash.</button>
+<button data-correct="false">Only if the LLM supports batching across concurrent queries.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Which query classes should <em>not</em> be reranked, and why?</div>
+<button data-correct="false">Natural-language questions — the first stage's semantic scores are already optimal there.</button>
+<button data-correct="true"><code>EXACT_ID</code> and <code>NAVIGATIONAL</code>. For exact identifiers the lexical arm either found the item or it doesn't exist, so headroom is ~0; for browse queries the ordering is driven by business rules, not semantic relevance. Routing around them cuts the retail reranker bill ~40% with no quality loss.</button>
+<button data-correct="false">Ambiguous short queries — too little signal for a cross-encoder to use.</button>
+<button data-correct="false">None; reranking every query is what keeps the evaluation unbiased.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Insurance costs $584/month at both N=10 and N=100. Why, and what should you do about it?</div>
+<button data-correct="false">The reranker is CPU-bound, so candidate count doesn't affect cost until the CPU saturates.</button>
+<button data-correct="true">Both fit inside one GPU, and you can't rent a fraction of one. Below a machine's capacity, extra candidates are free at the margin — so the §3 efficiency argument inverts and you should take the largest N that still fits one machine. Find where your step function is before optimising against a smooth curve that isn't there.</button>
+<button data-correct="false">Because the recall curve is flat in that range, so the script reports a flat cost.</button>
+<button data-correct="false">Because cost is dominated by the first stage at these candidate counts.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Why can a cross-encoder rank better than the bi-encoder that retrieved the candidates?</div>
+<button data-correct="false">It has more parameters, so it represents the documents more accurately.</button>
+<button data-correct="true">It sees the query and document in the same forward pass, so attention runs across both — it can notice negation, matching numbers, or a qualifier that applies. A bi-encoder embeds the document before your query exists, so that vector must be a compromise across every possible query about it. The difference is structural, not just capacity.</button>
+<button data-correct="false">It is trained on the target domain while the bi-encoder is general-purpose.</button>
+<button data-correct="false">It scores against the full corpus rather than an approximate index.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help measuring your <code>recall@N</code> curve, wiring the reranker behind the Week 2 Day 4 router, or deciding between MiniLM and a base cross-encoder on your latency budget? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day2/0014-dense-sparse-hybrid.html">&larr; Day 2: Dense vs Sparse vs Hybrid</a>
+<a href="../day4/0016-rag-evaluation.html">Day 4: RAG Evaluation &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0016 — RAG Evaluation: Metrics, Golden Sets, and the Statistics Nobody Runs</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>RAG Evaluation — Metrics, Golden Sets, and the Statistics Nobody Runs</h1>
+<p class="subtitle">Week 3, Day 4 — measuring retrieval and generation, and knowing when your eval set can't</p>
+
+<p>Days 1–3 produced three decisions that all need measuring: <strong>chunk size and overlap</strong>, <strong>hybrid arm weighting</strong>, and <strong>reranker plus candidate N</strong>. Each was justified with arithmetic and each ends with the same sentence — <em>measure it on a golden set.</em> Today is that.</p>
+
+<p>The bulk of this lesson is not the metric definitions. Those take twenty minutes. It is the part that comes after, which is skipped almost universally:</p>
+
+<div class="verdict">
+<div class="label">The claim this lesson is built around</div>
+<strong>"B scored 0.03 higher" is not a result. It is a measurement whose error bars you have not computed.</strong> A typical 40–50 query golden set cannot resolve anything smaller than roughly 0.06–0.08 nDCG — which is <em>larger than most real chunking and reranking gains</em>. So the standard procedure (run the golden set against A and B, compare means, ship the winner) is frequently incapable of distinguishing the two systems, and reports a number anyway.
+</div>
+
+<h2>1. Two Systems, Measured Separately</h2>
+
+<p>A RAG pipeline fails in two independent places, and conflating them is the most common evaluation mistake:</p>
+
+<table class="matrix-table">
+  <tr><th></th><th>Retrieval</th><th>Generation</th></tr>
+  <tr><td><strong>Question</strong></td><td>Did the right information reach the prompt?</td><td>Given what reached the prompt, was the answer faithful and useful?</td></tr>
+  <tr><td><strong>Fails as</strong></td><td>The answer isn't in the context at all.</td><td>The answer is in the context and the model ignored it, contradicted it, or invented an addition.</td></tr>
+  <tr><td><strong>Fix</strong></td><td>Chunking, hybrid weights, N, reranking — Days 1–3.</td><td>Prompt, grounding instructions, citation requirements, model choice.</td></tr>
+  <tr><td><strong>Measured with</strong></td><td>recall@N, nDCG@k, MRR, precision@k</td><td>Groundedness, answer relevance, completeness</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">Why an end-to-end score alone is close to useless</div>
+"Our RAG system scores 0.71" tells you nothing you can act on. Retrieval at 0.95 with generation at 0.75 and retrieval at 0.75 with generation at 0.95 produce similar end-to-end numbers and demand <strong>completely different work</strong> — one is a chunking and ranking problem, the other is a prompting problem. <strong>Always report both, always separately.</strong> Then the end-to-end number is a summary rather than a mystery.
+</div>
+
+<h2>2. Retrieval Metrics — Which, and When</h2>
+
+<p>Four metrics, and the discipline is knowing which question each answers:</p>
+
+<table class="matrix-table">
+  <tr><th>Metric</th><th>What it measures</th><th>Use it when</th><th>What it is blind to</th></tr>
+  <tr>
+    <td><strong>recall@N</strong></td>
+    <td>Did the candidate set contain the answer at all?</td>
+    <td class="yes"><strong>Always.</strong> It's Day 3's ceiling — no downstream stage can exceed it.</td>
+    <td>Ordering entirely. recall@50 is unchanged whether the answer is at rank 1 or rank 50.</td>
+  </tr>
+  <tr>
+    <td><strong>nDCG@k</strong></td>
+    <td>Graded, position-weighted quality of the final ranking.</td>
+    <td>The user-facing ranking. It's the one to optimise for the top-k that enters the prompt.</td>
+    <td>Anything outside k. It cannot see a retrieval failure — a query with no relevant doc anywhere scores 0 the same as one ranked badly.</td>
+  </tr>
+  <tr>
+    <td><strong>MRR</strong></td>
+    <td>Reciprocal rank of the <em>first</em> relevant result.</td>
+    <td>When there is exactly one correct answer — an ID lookup, a specific policy clause.</td>
+    <td>All the other relevant documents. Wrong metric for "show me the options".</td>
+  </tr>
+  <tr>
+    <td><strong>precision@k</strong></td>
+    <td>What fraction of what you sent was relevant.</td>
+    <td>When the prompt budget is tight — Day 1 showed every irrelevant chunk is paid for twice.</td>
+    <td>Whether the important one was included at all.</td>
+  </tr>
+</table>
+
+<div class="code-inline">python rag_eval_harness.py
+
+  retrieved (ranked) : [11, 4, 7, 2, 9]
+  relevant           : [4, 9, 15]  graded {4: 3.0, 9: 2.0, 15: 3.0}
+
+  recall@5    = 0.667   found 2 of 3 relevant documents
+  precision@5 = 0.400   2 of the 5 returned were relevant
+  MRR         = 0.500   first relevant hit was at position 2
+  nDCG@5      = 0.453   position-weighted, graded, normalised</div>
+
+<p><strong>A team reporting only nDCG@5 cannot distinguish a retrieval failure from a ranking failure</strong>, and those have entirely different fixes. Report recall@N alongside it, always.</p>
+
+<h2>3. Generation Metrics — Groundedness Is the One That Matters</h2>
+
+<table class="matrix-table">
+  <tr><th>Metric</th><th>Definition</th><th>How to compute it</th></tr>
+  <tr>
+    <td><strong>Groundedness</strong><br>(faithfulness)</td>
+    <td>What fraction of the <em>claims</em> in the answer are supported by the retrieved context?</td>
+    <td>Decompose the answer into atomic claims, then check each against the context. Claim-level, not answer-level — an answer that is 90% correct with one invented number is a failure, and an answer-level score of 0.9 hides that.</td>
+  </tr>
+  <tr>
+    <td><strong>Answer relevance</strong></td>
+    <td>Does the answer address the question that was asked?</td>
+    <td>Cheap proxy: have a model generate questions from the answer and measure similarity to the original. Catches the confident non-answer.</td>
+  </tr>
+  <tr>
+    <td><strong>Completeness</strong></td>
+    <td>Did it use everything relevant that <em>was</em> in the context?</td>
+    <td>The one people skip. Distinguishes "retrieval didn't find it" from "retrieval found it and the model ignored it" — completely different fixes.</td>
+  </tr>
+  <tr>
+    <td><strong>Refusal correctness</strong></td>
+    <td>When the context <em>doesn't</em> contain the answer, does it say so?</td>
+    <td>Feed queries whose answers are deliberately absent. Measure how often it declines instead of confabulating.</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">Refusal correctness deserves its own eval set</div>
+It is the metric that separates a demo from a production system, and it needs <strong>negative examples that no other part of the suite contains.</strong> Take 30 real questions whose answers you have deliberately removed from the corpus, and measure how often the system says "I don't know" versus how often it produces something plausible.
+<p style="margin-top:0.7rem;margin-bottom:0;">For insurance and fintech this is not a nice-to-have. A confident wrong answer about a suicide exclusion or a chargeback deadline is materially worse than no answer, and a suite of only-answerable questions <em>cannot detect that failure mode at all</em>. It also ties directly to Day 2 §5: pure RRF has no way to express "nothing good here", which is why the pre-fusion score floor was worth building.</p>
+</div>
+
+<h2>4. The Golden Set</h2>
+
+<table class="matrix-table">
+  <tr><th>Property</th><th>Requirement</th><th>Why</th></tr>
+  <tr><td><strong>Source</strong></td><td>Real query logs, not invented questions.</td><td>Invented questions use the vocabulary of someone who has read the documents. That is precisely the vocabulary-mismatch problem you are trying to measure, defined out of existence.</td></tr>
+  <tr><td><strong>Stratification</strong></td><td>Sampled per query class, in traffic proportion — and record the class.</td><td>Week 2 Day 4: aggregates hide class-level regressions. You cannot slice by a label you didn't store.</td></tr>
+  <tr><td><strong>Grading</strong></td><td>Graded relevance (0–3), not binary.</td><td>nDCG needs grades. Binary labels throw away the difference between "the exact clause" and "a related clause".</td></tr>
+  <tr><td><strong>Negatives</strong></td><td>Include unanswerable questions.</td><td>Otherwise refusal correctness is unmeasurable.</td></tr>
+  <tr><td><strong>Freeze</strong></td><td>Fixed query set, fixed seeds, one change at a time.</td><td>Variance you remove is worth as much as sample you add, and it's free. §6.</td></tr>
+  <tr><td><strong>Size</strong></td><td class="no">Bigger than you think. Compute it — §6.</td><td>This is the one that is always wrong, and it invalidates everything above it.</td></tr>
+</table>
+
+<h2>5. What 50 Queries Actually Told Us</h2>
+
+<p>Here is a run where <strong>we know the true answer</strong>, because the data is simulated: system B is genuinely better by <strong>+0.0277 nDCG</strong>, measured over 200,000 queries.</p>
+
+<div class="code-inline">python rag_eval_harness.py
+
+  TRUE effect     : +0.0277 nDCG  (measured over 200,000 simulated queries)
+  This sample says: -0.0208 nDCG
+
+  class                   n       A       B    delta              95% CI           verdict
+  ------------------------------------------------------------------------------------------
+  EXACT_ID               11   0.901   0.855   -0.047    [-0.173, +0.046]   NOT significant
+  NATURAL_LANGUAGE       22   0.592   0.579   -0.013    [-0.079, +0.034]   NOT significant
+  NAVIGATIONAL           10   0.743   0.777   +0.034    [-0.055, +0.120]   NOT significant
+  AMBIGUOUS               7   0.318   0.234   -0.084    [-0.200, +0.013]   NOT significant
+  ------------------------------------------------------------------------------------------
+  OVERALL                50   0.652   0.631   -0.021    [-0.067, +0.020]   NOT significant
+  bootstrap p (two-sided) = 0.3394</div>
+
+<svg viewBox="0 0 760 250" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE EFFECT vs THE NOISE FLOOR</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Same scale. The measurement cannot see something smaller than its own resolution.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="76" font-weight="700" fill="#2e6b3e">true effect</text>
+    <rect x="150" y="64" height="17" rx="3" fill="#2e6b3e" width="0">
+      <animate attributeName="width" from="0" to="76" dur="1.0s" fill="freeze" begin="0.2s"/></rect>
+    <text x="238" y="77" fill="#2e6b3e" font-weight="700" opacity="0">+0.0277
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.1s"/></text>
+
+    <text x="24" y="108" font-weight="700" fill="#a8451f">noise floor (MDE at n=50)</text>
+    <rect x="150" y="96" height="17" rx="3" fill="#a8451f" width="0" opacity="0.85">
+      <animate attributeName="width" from="0" to="173" dur="1.0s" fill="freeze" begin="0.6s"/></rect>
+    <text x="335" y="109" fill="#a8451f" font-weight="700" opacity="0">+0.0628 &#8212; 2.3&#215; the effect
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+
+    <text x="24" y="140" font-weight="700" fill="#333">what this eval measured</text>
+    <rect x="93" y="128" height="17" rx="3" fill="#8a8578" width="0">
+      <animate attributeName="width" from="0" to="57" dur="1.0s" fill="freeze" begin="1.0s"/></rect>
+    <text x="335" y="141" fill="#333" opacity="0">&#8722;0.0208 &#8212; <tspan font-weight="700" fill="#a8451f">the wrong sign</tspan>
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.0s"/></text>
+    <line x1="150" y1="56" x2="150" y2="152" stroke="#555" stroke-width="1"/>
+    <text x="140" y="166" font-size="9.5" fill="#777" text-anchor="middle">0</text>
+  </g>
+
+  <text x="24" y="194" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">The bootstrap said <tspan font-weight="700">NOT SIGNIFICANT</tspan>, which is correct and is the only honest answer available from 50 queries.</text>
+  <text x="24" y="212" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8220;Compare the means, ship the winner&#8221; would have <tspan font-weight="700" fill="#a8451f">shipped A</tspan> &#8212; rejecting a real improvement, and writing a number with the wrong sign into the decision doc.</text>
+  <text x="24" y="236" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">The bootstrap didn't find the truth. Nothing could, from 50 queries. It stopped you asserting a falsehood &#8212; that's the whole value.</text>
+</svg>
+
+<div class="caution">
+<div class="label">Look at the per-class rows again</div>
+Every class is inconclusive, and the class sample sizes are <strong>11, 22, 10 and 7</strong>. Per-class slicing is <em>necessary</em> — Week 2 Day 4 proved aggregates hide regressions — and it simultaneously <strong>multiplies your noise problem</strong>, because each slice holds a fraction of the sample. Those two facts are both true and they pull in opposite directions.
+<p style="margin-top:0.7rem;margin-bottom:0;">The resolution isn't to stop slicing. It's to <strong>size the eval set for the slice you care about most</strong>, not for the total. If <code>NATURAL_LANGUAGE</code> is 41% of traffic and you need to resolve +0.03 there, you need roughly 2.4× as many total queries as the aggregate calculation suggests.</p>
+</div>
+
+<h2>6. How Many Queries Do You Actually Need?</h2>
+
+<p>This calculation takes two minutes and is almost never run. It should be run <em>before</em> labelling, because labelling is the expensive part and the only part whose cost you control up front.</p>
+
+<div class="math-box">MDE = (z<sub>&#945;/2</sub> + z<sub>&#946;</sub>) &#183; SD / &#8730;n &nbsp;&nbsp;&#8776;&nbsp;&nbsp; 2.80 &#183; SD / &#8730;n</div>
+
+<p>The one input is <code>SD</code>, the standard deviation of the <em>per-query paired difference</em>. And its size is the thing people get wrong:</p>
+
+<div class="verdict">
+<div class="label">Why the noise is larger than you'd guess</div>
+A retrieval change doesn't nudge every query slightly. It leaves <strong>most queries untouched and flips a minority hard</strong> — a query either surfaces the right chunk or it doesn't. So the per-query difference is a spike at zero plus a wide tail, and its SD lands around <strong>0.16</strong> rather than the 0.02–0.05 a "small noise" intuition suggests. That difference is an order of magnitude in required sample size, since n scales as SD².
+</div>
+
+<div class="code-inline">  Observed per-query SD of the paired difference: 0.1587
+
+     queries      MDE (nDCG)   what that means
+  ------------------------------------------------------------------
+          20          0.0993   only huge changes are visible
+          40          0.0702   only huge changes are visible
+          50          0.0628   typical reranking gains are NOT resolvable  &lt;-- your eval set
+         100          0.0444   typical reranking gains are NOT resolvable
+         250          0.0281   resolves reranking, not chunk tuning
+         500          0.0199   resolves realistic tuning deltas
+        1000          0.0141   resolves realistic tuning deltas</div>
+
+<table class="matrix-table">
+  <tr><th>To detect a true gain of</th><th>You need roughly</th><th>And to resolve it inside <code>NATURAL_LANGUAGE</code> (41% of traffic)</th></tr>
+  <tr><td>+0.05 nDCG</td><td>~79 queries</td><td>~193 total</td></tr>
+  <tr><td>+0.03 nDCG</td><td>~220 queries</td><td>~537 total</td></tr>
+  <tr><td>+0.02 nDCG</td><td>~494 queries</td><td>~1,205 total</td></tr>
+</table>
+
+<p>Set against Day 3: a reranker's realistic contribution is often in the +0.02 to +0.05 range. <strong>So the eval set needed to justify the reranker is several hundred queries, and the one most teams have is fifty.</strong> That's not a rounding error — it means the reranker decision was made on noise.</p>
+
+<h2>7. When You Cannot Afford the Queries</h2>
+
+<p>Labelling 500 graded queries is real work. Four honest options, roughly in order of value:</p>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Option</th><th>What it costs you</th></tr>
+  <tr>
+    <td>1</td>
+    <td class="yes"><strong>Reduce variance instead of adding samples.</strong> Fix the query set across runs, fix seeds, change exactly one thing. Pairing already does a lot of this.</td>
+    <td>Nothing. Variance removed is worth the same as sample added, and it is free. Do this first, always.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td class="yes"><strong>Measure a lower-variance quantity.</strong> <code>recall@N</code> has far less per-query variance than <code>nDCG@5</code> because it's insensitive to ordering.</td>
+    <td>You measure retrieval, not ranking — which is the right trade when the change <em>is</em> a retrieval change.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Accept a directional read, and say so.</strong> "B is probably better, CI [−0.01, +0.07]; we shipped it because it's also simpler."</td>
+    <td>Nothing but the illusion of precision. This is an honest engineering decision. "B is 3% better" is a false claim.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td class="partial"><strong>Use an LLM judge to expand the set</strong> — carefully.</td>
+    <td class="no">Label quality. And judge bias is <strong>systematic, not random, so it does not average out with more samples</strong> — 10,000 judged queries can be more confidently wrong than 50 human-labelled ones. Calibrate against a human-labelled subset and report the agreement rate alongside every number.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">The failure to avoid entirely</div>
+Running the same 40 queries a hundred times while tuning. <strong>That is not evaluation, it is optimisation against the sample.</strong> Every configuration you try gets another chance to look good by luck, and the gains you find will not survive contact with traffic. If you're going to iterate, hold out a set you look at <em>once</em> — and treat the number it gives you as the real one.
+</div>
+
+<h2>8. Three Domains, Three Different Suites</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><strong>Primary metric:</strong> revenue-weighted nDCG@8.</p>
+    <p>Week 2 Day 4's trap: traffic-weighted nDCG rose +0.049 while revenue-weighted fell −0.009. High-traffic queries are not high-value queries.</p>
+    <p><strong>Golden set from logs</strong>, stratified by class and weighted by margin. Plenty of traffic, so sample size is the cheap part here.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><strong>Primary metric:</strong> groundedness, then refusal correctness.</p>
+    <p>A confident wrong answer about an exclusion is a compliance event. Ranking quality is secondary to <em>never asserting an unsupported claim</em>.</p>
+    <p><strong>The hard part:</strong> 20 QPS means few logged queries, so the golden set must be built by underwriters — expensive, and the power calculation matters most exactly where queries are scarcest.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><strong>Primary metric:</strong> exact-match accuracy on codes and deadlines.</p>
+    <p>"Reason code 4853" versus "4837" is a binary outcome, not a graded one. nDCG is the wrong shape; report accuracy and MRR.</p>
+    <p><strong>Negative set is mandatory:</strong> queries about codes that don't exist, to catch the plausible-neighbour failure from Day 2 §3.</p>
+  </div>
+</div>
+
+<h2>9. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it computes</th></tr>
+  <tr>
+    <td><code>week3/day4/rag_eval_harness.py</code></td>
+    <td>Worked examples of recall@k / precision@k / MRR / nDCG@k; a <strong>paired bootstrap</strong> between two systems with 95% CIs per query class and overall; and a <strong>power sweep</strong> giving the minimum detectable effect at each eval-set size, plus the queries needed for a target effect. Runs on simulated data <em>with a known ground truth</em>, so you can see whether the statistics would have told you the right thing. <code>--n-queries</code>, <code>--true-delta</code>, <code>--alpha</code>, <code>--iters</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week3/day4
+python rag_eval_harness.py                      # 50 queries: wrong sign, correctly called
+python rag_eval_harness.py --n-queries 2000     # enough power: +0.021, CI excludes zero
+python rag_eval_harness.py --true-delta 0.0     # what a NULL result looks like
+python rag_eval_harness.py --alpha 0.01         # stricter threshold, wider intervals</div>
+
+<h2>10. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Evaluation Check</h3>
+
+<div class="quiz">
+<div class="q">1. Your RAG system scores 0.71 end to end. What is the problem with that number?</div>
+<button data-correct="false">Nothing — it's a valid summary of overall system quality.</button>
+<button data-correct="true">It's unactionable. Retrieval 0.95 / generation 0.75 and retrieval 0.75 / generation 0.95 give similar end-to-end scores and demand completely different work — one is a chunking and ranking problem, the other is a prompting problem. Report both separately, always.</button>
+<button data-correct="false">It's too low; production RAG systems should score above 0.85.</button>
+<button data-correct="false">It should be reported as nDCG@5 rather than as a raw fraction.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Why does reporting only nDCG@5 leave you unable to act?</div>
+<button data-correct="false">Because nDCG is not comparable across different corpora.</button>
+<button data-correct="true">Because it cannot distinguish a retrieval failure from a ranking failure. A query whose answer is nowhere in the candidate set and a query whose answer is retrieved but ranked 40th can both score near zero — and the fixes are unrelated. Report <code>recall@N</code> alongside it: it's the ceiling everything else lives under.</button>
+<button data-correct="false">Because nDCG requires binary relevance labels, which are too coarse.</button>
+<button data-correct="false">Because k=5 is too small to be statistically stable.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. In the worked run, B is genuinely better by +0.0277 but the 50-query eval measured −0.0208. What went wrong?</div>
+<button data-correct="false">The bootstrap was misconfigured — a paired test should not produce the wrong sign.</button>
+<button data-correct="true">Nothing went wrong. The true effect is well below what 50 queries can resolve (MDE 0.0628), so the measurement is dominated by which queries happened to be drawn. The bootstrap correctly reported "not significant"; "compare the means, ship the winner" would have shipped A and recorded a number with the wrong sign.</button>
+<button data-correct="false">The query classes were unbalanced, biasing the aggregate downward.</button>
+<button data-correct="false">The eval set was contaminated by queries used during tuning.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Why is the per-query SD of paired nDCG differences around 0.16 rather than 0.03?</div>
+<button data-correct="false">Because nDCG is unbounded above, so outliers dominate the variance.</button>
+<button data-correct="true">Because a retrieval change doesn't nudge every query slightly — it leaves most untouched and flips a minority hard, since a query either surfaces the right chunk or it doesn't. The difference distribution is a spike at zero plus a wide tail. Since required n scales as SD², assuming small noise understates the eval set you need by an order of magnitude.</button>
+<button data-correct="false">Because graded relevance labels are noisier than binary ones.</button>
+<button data-correct="false">Because the bootstrap resamples with replacement, which inflates the estimate.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Per-class slicing is required (Week 2 Day 4) and also makes the statistics worse. How do you resolve that?</div>
+<button data-correct="false">Report aggregate metrics for decisions and per-class metrics for diagnosis only.</button>
+<button data-correct="true">Size the eval set for the slice you care about most, not for the total. If <code>NATURAL_LANGUAGE</code> is 41% of traffic and you need to resolve +0.03 there, you need roughly 2.4× the total queries the aggregate calculation suggests — about 537 rather than 220.</button>
+<button data-correct="false">Use a one-sided test per class, which halves the required sample size.</button>
+<button data-correct="false">Merge low-volume classes together until each slice has at least 30 queries.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Why doesn't LLM-judge bias average out as you label more queries?</div>
+<button data-correct="false">It does — that's precisely why judges are useful for expanding small eval sets.</button>
+<button data-correct="true">Because the bias is systematic rather than random. A judge that consistently prefers longer answers or its own phrasing pushes every sample the same direction, so more samples give a tighter confidence interval around a wrong value. 10,000 judged queries can be more confidently wrong than 50 human-labelled ones. Calibrate against a human-labelled subset and report the agreement rate.</button>
+<button data-correct="false">Because judges have high variance, which requires many more samples to overcome.</button>
+<button data-correct="false">Because judges cannot produce graded relevance, only binary labels.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Why does refusal correctness need its own eval set?</div>
+<button data-correct="false">Because refusals are scored on a different scale from relevance judgements.</button>
+<button data-correct="true">Because it needs negative examples — questions whose answers are deliberately absent from the corpus — and no other part of the suite contains them. A suite of only-answerable questions cannot detect confabulation at all. For insurance and fintech, a confident wrong answer is materially worse than no answer, which makes this the metric that separates a demo from a production system.</button>
+<button data-correct="false">Because refusal rates depend on the model, not the retrieval pipeline.</button>
+<button data-correct="false">Because measuring it on the main set would depress the aggregate nDCG.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">8. You have 60 queries and can't label more this quarter. What's the highest-value move?</div>
+<button data-correct="false">Switch to an LLM judge and expand to 2,000 queries.</button>
+<button data-correct="true">Reduce variance rather than adding samples: fix the query set across runs, fix seeds, change exactly one thing at a time, and measure <code>recall@N</code> instead of <code>nDCG@5</code> when the change is a retrieval change. Variance removed is worth as much as sample added, and it's free. Then report a directional read with the interval, not a point estimate.</button>
+<button data-correct="false">Run the 60 queries repeatedly across configurations and pick the best-scoring one.</button>
+<button data-correct="false">Drop per-class reporting so the aggregate has more statistical power.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help building the golden set from your query logs, wiring the paired bootstrap into CI, or designing the negative set for refusal correctness? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day3/0015-reranking.html">&larr; Day 3: Reranking</a>
+<a href="../day5/0017-failure-modes.html">Day 5: Failure Modes &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

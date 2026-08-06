@@ -870,3 +870,269 @@ hatch** — rule out partition-plus-exact *first*, because it is strictly the ch
 
 Day 3 is now **13 sections**, 12 quiz questions (added Q10 fintech-2B-is-an-illusion, Q11 the
 latency/throughput asymmetry, Q12 the two questions that are really decisions).
+
+---
+
+# WEEK 3 — RAG ARCHITECTURE
+
+Built in one session at Yc's request ("can we create the Week - 3"), Days 1 through 6-7.
+Six lessons (0013–0018) plus six runnable stdlib-only scripts. Same method as Week 2:
+build the artifact, run it, and let the verification correct the prose.
+
+## Week 3, Day 1 — Chunking Strategies (`0013-chunking-strategies.html`)
+
+### The refinement to Week 2's claim
+Week 2 §10 Q2 said halving chunk size doubles infrastructure cost. True for the *index*, and
+it is the smaller half of the bill. **Chunk size moves two costs in opposite directions:**
+
+    smaller chunks -> more vectors        -> index cost UP
+    smaller chunks -> fewer tokens/query  -> generation cost DOWN
+
+Retail: at 1,600-token chunks generation is **81.6× infrastructure**. Total cost is
+**U-shaped** with a minimum at 200 tokens ($15,488/mo); 1,600 tokens costs $47,732 — **3.1× the
+optimum**, and it is exactly where an index-only cost model points you.
+
+**Stated counterpoint:** the U-shape assumes fixed k. Under a fixed *context budget*
+(`--fixed-context`) generation is flat and only the index moves, so large chunks win. Same
+corpus, opposite conclusion — so the retrieval policy has to be stated before the cost number
+means anything.
+
+### The geometry result (derived, not asserted)
+For answer span L, chunk C, overlap O, stride S = C−O:
+
+    P(answer survives) = 1              if O >= L
+                       = (C−L)/(C−O)    if O < L < C
+                       = 0              if L >= C
+
+**Overlap ≥ typical answer span guarantees no answer is ever split.** Not "overlap helps" — a
+threshold. And below the span length, containment is *zero*: no reranker recovers a fact cut in
+half at ingest.
+
+### The recommendation that isn't the usual advice
+**Buy containment with OVERLAP, not with chunk size.** Overlap is paid once at ingest as
+storage; chunk size is paid again in every prompt. Insurance: **512 tok / 60% overlap = $984/mo**
+beats 1,600 tok / 15% overlap at $1,927/mo — same guarantee, **half the cost**, signal density
+58.6% vs 18.8%. Conventional "10–20% overlap" is right for short spans and badly wrong for long
+ones; overlap should come from the measured p90 answer span.
+
+### Per-domain answers (all different)
+| | span | chunk / overlap | cost |
+|---|---|---|---|
+| Retail | 40 tok | 200 / 40 (20%) | $15,777/mo |
+| Insurance | 300 tok | 512 / 307 (60%) | $984/mo |
+| Fintech docs | 200 tok | 400 / 200 (50%) | $2,165/mo |
+
+### `chunker_compare.py` findings
+Four chunkers over a policy excerpt, scored on whether any single chunk answers three
+cross-reference questions, swept across chunk budget:
+- **structural answers all three from 30 tokens; recursive needs 70; fixed needs 90.**
+- Structural wins **not because of better boundaries** but because it stamps the section path
+  onto every chunk — the cheapest form of contextual retrieval, using context the document
+  already provided.
+- **Fixed is non-monotonic**: 3/3 at 90 tokens, 2/3 at 120. A noisy chunk-size sweep is a signal
+  the chunker is fighting the document, not a signal to sweep harder. Also why "we tuned chunk
+  size on our eval set" can mean "we overfit to which sentences landed together."
+
+### Also covered
+Overlap costs retrieval diversity too (near-duplicates crowd top-k) → span dedup + adjacent
+merge must ship *with* high overlap. `content_hash` is the metadata field people omit and regret
+— without it every chunking change is a full re-embed. Small-to-big resolves the §1 tension:
+index 200-token children, return 1,600-token parents via a **b-tree point read**, not a second
+vector search.
+
+12 sections, 8 quiz questions, interactive chunk-economics explorer, 3 animated SVGs.
+
+## Week 3, Day 2 — Dense vs Sparse vs Hybrid (`0014-dense-sparse-hybrid.html`)
+
+Differentiated from Week 2 Day 4 (which was *production* hybrid: routing, RRF weights, eval
+traps). This is the layer underneath — what each arm computes and therefore what it cannot
+retrieve.
+
+### The measured result, which is not the one I expected
+`bm25_vs_tsrank.py` implements BM25 and the identical scorer with IDF deleted. First attempt
+showed **no divergence at all** — the toy corpus had no decoys, and my "common" terms appeared in
+only 4 documents so they weren't common. After fixing the generator:
+
+**BM25 holds rank 1 in every cell. The no-IDF scorer loses the answer from 6 query terms onward,
+at EVERY corpus size.** So the trigger is **query length, not corpus size**. Corpus size sets the
+*magnitude* — IDF spread runs 4.8× at N=5 to 66× at 4M.
+
+Why it survives to production: dev corpora are curated and lack decoys; manual testing uses short
+queries; and hybrid fusion lets the dense arm cover for it. The class at risk is
+`NATURAL_LANGUAGE` — exactly the one teams assume dense is carrying anyway.
+
+### Fixes, in order
+1. `setweight()` field weighting (A/B/D) — doesn't restore IDF but approximates it where
+   discriminators live in specific columns. Cheapest by far.
+2. `ts_stat()` → materialised term→idf table. Real BM25 in SQL, and a refresh job you now own.
+3. Let dense carry it — legitimate only if you've *measured* that it does.
+
+**If fused ≈ dense-only, the lexical arm is contributing nothing** — a hybrid system paying for
+two arms and running one. Measure the arms separately, per class.
+
+### Also
+BM25 derived (k1 saturation, b length-norm, IDF). **Tuning note specific to Day 1: fixed-size
+chunks removed the length variance `b` exists to correct, so b→0.3 or 0 is often right on a
+chunked corpus and is almost never tested.** RRF's one real weakness: it discards score
+magnitude, so it cannot express "nothing good here" → pre-fusion score floor. SPLADE covered and
+rejected *for Postgres* — adopting it means adopting a search engine, which breaks the operational
+argument that kept you in Postgres.
+
+## Week 3, Day 3 — Reranking (`0015-reranking.html`)
+
+### The framing
+**A reranker improves precision, never recall.** End-to-end quality is bounded by `recall@N`.
+If recall@100 = 0.72, 28% of queries are unanswerable regardless of reranker quality.
+
+### The sizing result
+**Cost is linear in N; the recall curve saturates. That guarantees an efficiency optimum strictly
+below the latency limit** — so "set N to whatever fits the budget" is reliably wrong.
+
+Retail: **N=50 at $523 per +0.01 of ceiling** vs N=200 (the largest that fits) at **$1,546** —
+3× worse per unit of quality. The `$ per +0.01` column is what makes the decision, not recall@N.
+
+`rerank_economics.py` originally recommended the largest affordable N; corrected to pick on
+marginal efficiency.
+
+### The LLM-reranker reality check (corrected my own domain note)
+I had written that insurance's 2-second budget means "even an LLM reranker fits." The script
+disproved it: **at 512-token chunks even N=25 needs 3.2 s**. N=10 fits but costs $16,589/mo vs
+$584 for a cross-encoder at N=100 — 28× the price for a *worse* ceiling (0.62 vs 0.89).
+**The binding constraint is prompt length, not QPS.** Note rewritten.
+
+### Also
+GPU granularity: insurance costs the same $584 at N=10 and N=100 because both fit one GPU —
+below a machine's capacity the efficiency argument *inverts*. Routing (rerank only
+`NATURAL_LANGUAGE` + `AMBIGUOUS`) drops retail from 13 GPUs to 8, **$7,592 → $4,672/mo, 38%, zero
+quality loss**. Also added: a feasibility guard so cost comparison can't recommend an
+undeployable configuration.
+
+## Week 3, Day 4 — RAG Evaluation (`0016-rag-evaluation.html`)
+
+The angle that's usually missing is statistical, and it's the strongest artifact of the week.
+
+### What the harness demonstrates
+Simulated data **with known ground truth**. System B is genuinely better by **+0.0277 nDCG**.
+The 50-query eval measured **−0.0208 — the wrong sign** — and correctly reported NOT significant
+(MDE at n=50 is 0.0628, 2.3× the true effect).
+
+- "Compare the means, ship the winner" → **ships A**, rejecting a real improvement and recording
+  a wrong-signed number in the decision doc.
+- Paired bootstrap → "not significant", which is the only honest answer available from 50 queries.
+- **The bootstrap didn't find the truth. Nothing could. It stopped you asserting a falsehood.**
+
+At n=2000 it converges correctly: +0.0211, CI excludes zero.
+
+### The variance insight
+Per-query paired nDCG SD is **~0.16, not 0.02–0.05**, because a retrieval change leaves most
+queries untouched and **flips a minority hard** — a query either surfaces the right chunk or it
+doesn't. Since n scales as SD², assuming small noise understates the required eval set by an
+order of magnitude.
+
+To detect +0.03: **~220 queries**, or **~537** to resolve it inside `NATURAL_LANGUAGE` (41% of
+traffic). Most teams have 40–50.
+
+Two simulation bugs fixed during the build: noise model was unrealistically smooth (made the eval
+look far more powerful than it is), then a hard clamp introduced systematic negative bias large
+enough to flip the population effect's sign — moved to a **logit-space shift**, which is bounded
+by construction and still produces a real ceiling effect. Script now measures and reports the
+true population effect over 200k queries rather than assuming the input parameter is the truth.
+
+### Also
+Refusal correctness needs its own negative eval set — no other part of the suite contains
+unanswerable questions. **LLM-judge bias is systematic, not random, so it does NOT average out**:
+10,000 judged queries can be more confidently wrong than 50 human-labelled ones.
+
+## Week 3, Day 5 — Failure Modes (`0017-failure-modes.html`)
+
+Focus: **conflicting sources** — the failure that passes every Day 4 metric.
+
+### The mechanism
+Revised documents produce near-identical versioned chunks. Near-identical text is near-identical
+in embedding space, so a retrieval that finds one finds them all. The model gets three versions,
+is told nothing about which is in force, and picks one.
+
+Groundedness scores it **GROUNDED** — because the claim genuinely *is* supported by a real,
+correctly-quoted retrieved chunk.
+
+### The result worth remembering
+**Reranking causes this.** Insurance 36% → 100%; **retail 0.1% → 97.5%**. A cross-encoder scores
+each candidate against the query independently, and every version answers about equally well, so
+it promotes all of them. Day 3's precision win and this failure are the same mechanism from two
+sides. **The effective-date filter must ship BEFORE the reranker** — otherwise you manufacture a
+failure mode that did not previously exist.
+
+### Detection vs prevention
+"Instruct the model to prefer the newest" is a **detection** control — it can only choose among
+what was retrieved, and in **28.9%** of insurance queries the context held a superseded version
+*without* the current one. The date filter is a **prevention** control. Audit committees ask
+which one you have.
+
+**As-of date is an input, not `today()`.** A 2023 claim is adjudicated under the 2023 wording; a
+dispute under the rules in force at transaction time. Hardcoding today fails quietly, in the
+direction that loses litigation.
+
+Two bugs fixed: version-aware dedup was keeping the *highest-scoring* version rather than the
+newest (retrieval score says nothing about what's in force), and the candidate pool was
+degenerate so versions always swept top-k.
+
+Also: relevance graders shown three versions mark all three relevant — **the labelling process
+itself erases the distinction the eval needs**. Catching this requires purpose-built questions
+whose answers changed between versions, graded against a stated as-of date.
+
+## Week 3, Day 6-7 — Checkpoint / ADR-003 (`0018-checkpoint-retrieval-redesign.html`)
+
+Full pipeline redesign with five decisions, each traced to its number, plus "what would change
+our mind" for each. Rollout order with two non-obvious dependencies (date filter before
+reranker; span dedup *with* the overlap increase, not after).
+
+### The cost line that reframes it
+Retail: generation **$10,854 (53%)**, index **$4,910 (24%)**, reranking $4,672, embed $13 —
+**$20,449/mo total, down from $27,574** despite *adding* a reranker, because smaller chunks
+shrink the prompt faster than they grow the index.
+
+**Week 2 spent five days on the index because that's where the interesting engineering is. Week 3
+found the prompt is where the money is.** Both matter: the index is where you break the system,
+the prompt is where you bankrupt it.
+
+### The honest closing
+Four of the five ADR decisions rest on **one measurement not yet made properly** — the p90
+answer-span distribution (50 examples). Stated explicitly as the thing to revisit first, with the
+reasoning that "here's the model, here's what it recommends, and here's the input I'd want more
+evidence for" beats a confident recommendation with an unexamined premise.
+
+Four interview drills as `<details>` blocks.
+
+## Verification
+9 SVGs parse, all 6 scripts run, all flags exercised, 58 sections and 37 quiz questions across
+the six lessons, only the intentional Week 4 forward link
+(`week4/day1/0019-langgraph-fundamentals.html`) unresolved.
+
+## Handover prompt for Week 4, Day 1
+
+> I'm working through a 12-week AI Data Architect prep curriculum in `Claude/`.
+> 1. Please review `Claude/mission.md`, `Claude/dataPrep.md`, and `Claude/NOTES.md`
+>    (Weeks 2 and 3) for my 14-year Data Engineering background and three-domain target
+>    (retail / life insurance / fintech).
+> 2. Completed so far:
+>    - **Week 1 (Embeddings):** vector physics → distance metrics → OpenAI vs open-source →
+>      fine-tuning → justification framework → ADR-001.
+>    - **Week 2 (Vector Databases):** pgvector internals → managed vector DBs and the dual-write
+>      problem → five scale walls, mitigation ladder, quantization economics, the eight-question
+>      sizing ladder → production hybrid search → operational simplicity → ADR-002.
+>    - **Week 3 (RAG Architecture):** chunking as a joint quality/cost decision → dense vs sparse
+>      vs hybrid and the missing IDF → reranking economics → evaluation statistics → failure
+>      modes and version conflicts → ADR-003.
+> 3. Today's Topic (Week 4, Day 1): LangGraph fundamentals — state machines vs simple chains,
+>    why cycles and conditional routing matter. Same treatment: concrete numbers, three-domain
+>    worked examples, runnable stdlib-only companion script, animated visuals for anything
+>    involving memory, cost, or comparison.
+>    - Reference lesson artifact: `Claude/week4/day1/0019-langgraph-fundamentals.html`
+> 4. Carry forward:
+>    - Week 3 Day 4 established that **most eval sets cannot resolve the effects being argued
+>      about** — apply the same power discipline to any agent-behaviour evaluation.
+>    - Week 3 Day 5 established **detection vs prevention controls** — useful lens for
+>      human-in-the-loop design (Week 4 Day 3).
+>    - Agent state persistence in Postgres is Week 4 Day 5 and should connect back to ADR-002.
+>
+> Let's dive into Week 4, Day 1!

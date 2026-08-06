@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0013 — Chunking Strategies: The Decision Made Before Retrieval Exists</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+
+  /* --- interactive explorer --- */
+  .explorer { background:#fff; border:1px solid #e2ded8; border-radius:10px; padding:1.2rem 1.4rem; margin:1.6rem 0; box-shadow:0 1px 4px rgba(0,0,0,0.06); }
+  .explorer h4 { margin:0 0 0.9rem 0; font-size:0.95rem; color:#1f5f8b; text-transform:uppercase; letter-spacing:0.05em; }
+  .explorer .ctl { display:grid; grid-template-columns:150px 1fr 96px; align-items:center; gap:0.6rem; margin-bottom:0.55rem; font-size:0.86rem; }
+  .explorer .ctl input[type=range] { width:100%; }
+  .explorer .val { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; text-align:right; }
+  .explorer .out { margin-top:1rem; border-top:1px solid #e2ded8; padding-top:0.9rem; }
+  .explorer .bar { height:19px; border-radius:4px; margin:3px 0 9px 0; transition:width 0.35s ease; }
+  .explorer .brow { font-size:0.8rem; display:flex; justify-content:space-between; }
+  .explorer .fin-verdict { margin-top:0.9rem; padding:0.7rem 0.9rem; border-radius:7px; font-size:0.88rem; font-weight:600; }
+</style>
+</head>
+<body>
+
+<h1>Chunking Strategies — The Decision Made Before Retrieval Exists</h1>
+<p class="subtitle">Week 3, Day 1 — chunk size as a joint quality and cost decision, with the arithmetic</p>
+
+<p>Week 2 ended by naming eight questions that determine a retrieval architecture. Question 2 was <em>chunks per document</em>, and it was flagged as <strong>a decision, not a fact</strong> — one with a 2–4× infrastructure multiplier, settled before a single row is indexed. This lesson pays that off.</p>
+
+<p>Two claims from Week 2 need refining, and both refinements make the decision <em>more</em> interesting:</p>
+
+<div class="verdict">
+<div class="label">What today changes about Week 2's answer</div>
+<p style="margin-top:0;"><strong>1. Chunk size moves two costs in opposite directions.</strong> Smaller chunks mean more vectors (index cost <em>up</em>) but fewer tokens per retrieved chunk (generation cost <em>down</em>). Total cost is <strong>U-shaped</strong>, and an index-only cost model points you at the wrong end of the curve.</p>
+<p style="margin-bottom:0;"><strong>2. "Smaller chunks are more precise" is true and incomplete.</strong> Precision rises as <code>1/C</code>, but the probability that an answer <em>survives intact</em> falls. Below the length of a typical answer, no chunk can contain the answer at all — and no reranker recovers a fact that was cut in half at ingest.</p>
+</div>
+
+<h2>1. A Chunk Serves Two Masters, and They Want Different Sizes</h2>
+
+<p>This is the tension underneath every chunking argument, and it is rarely stated. A chunk is <strong>both</strong>:</p>
+
+<table class="matrix-table">
+  <tr><th></th><th>As a <em>retrieval</em> unit</th><th>As a <em>generation</em> unit</th></tr>
+  <tr>
+    <td><strong>What it wants</strong></td>
+    <td><strong>Small.</strong> One embedding must represent the whole chunk. Pack four topics into one vector and it lands in the average of four places — near none of them.</td>
+    <td><strong>Large.</strong> The model needs the clause <em>and</em> its exception, the figure <em>and</em> its caption, the rule <em>and</em> the section it sits under.</td>
+  </tr>
+  <tr>
+    <td><strong>What goes wrong</strong></td>
+    <td>Big chunks blur. The embedding is a centroid, and a centroid of unrelated sentences is a poor match for any of them.</td>
+    <td>Small chunks truncate. You retrieve a true sentence with its qualifier missing — a confidently wrong answer, which is worse than no answer.</td>
+  </tr>
+  <tr>
+    <td><strong>Cost signal</strong></td>
+    <td>More chunks → bigger index → more RAM.</td>
+    <td>More tokens per chunk → longer prompts → a bill that scales with <em>traffic</em>, not corpus.</td>
+  </tr>
+</table>
+
+<p>Most teams resolve this by picking a compromise size and living with both problems. <strong>The better resolution is to stop making one object do both jobs</strong> — that is §9, and it is the single highest-leverage idea in this lesson. But the compromise is worth costing first, because it is what you will inherit.</p>
+
+<h2>2. The Geometry: When Does an Answer Survive Chunking?</h2>
+
+<p>Here is the part that is usually hand-waved as "overlap preserves context." It is derivable, and the derivation gives you an actual threshold to design against.</p>
+
+<p>Let the answer be a contiguous span of <strong>L</strong> tokens. Chunks are <strong>C</strong> tokens with overlap <strong>O</strong>, so chunk <em>i</em> covers <code>[iS, iS+C)</code> where the stride is <code>S = C − O</code>. The span starting at <em>p</em> is fully inside chunk <em>i</em> exactly when <code>iS ≤ p</code> and <code>p + L ≤ iS + C</code> — that is, <code>iS ≤ p ≤ iS + C − L</code>. So of every <em>S</em> positions, <code>min(S, C−L)</code> are safe:</p>
+
+<div class="math-box">
+P(answer survives) = 1 &nbsp;&nbsp;if O &#8805; L<br>
+P(answer survives) = (C &#8722; L) / (C &#8722; O) &nbsp;&nbsp;if O &lt; L &lt; C<br>
+P(answer survives) = 0 &nbsp;&nbsp;if L &#8805; C
+</div>
+
+<div class="verdict">
+<div class="label">The rule that falls out</div>
+<strong>Overlap at least as long as a typical answer span guarantees the answer is never split.</strong> Not "overlap helps" — a threshold, checkable against your own data. And the corollary matters just as much: <strong>if your chunk is shorter than the answer, no amount of overlap, reranking, or prompt engineering will fix it.</strong> The information was destroyed at ingest.
+</div>
+
+<svg viewBox="0 0 760 300" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">AN ANSWER SPAN MEETING A CHUNK BOUNDARY</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Same document, same answer, two overlap settings.</text>
+
+  <!-- no overlap -->
+  <text x="24" y="72" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#a8451f">O = 0 &#8212; the exclusion and its Colorado carve-out land in different chunks</text>
+  <rect x="24" y="82" width="340" height="30" rx="4" fill="#fff" stroke="#c9d6e2"/>
+  <rect x="366" y="82" width="340" height="30" rx="4" fill="#fff" stroke="#c9d6e2"/>
+  <text x="30" y="102" font-family="-apple-system,sans-serif" font-size="9.5" fill="#999">chunk 7</text>
+  <text x="372" y="102" font-family="-apple-system,sans-serif" font-size="9.5" fill="#999">chunk 8</text>
+  <rect x="250" y="88" width="200" height="18" rx="3" fill="#a8451f" opacity="0.75"/>
+  <text x="255" y="101" font-family="-apple-system,sans-serif" font-size="9.5" fill="#fff" font-weight="700">&#8230;suicide exclusion &#8942; except in Colorado&#8230;</text>
+  <line x1="365" y1="78" x2="365" y2="118" stroke="#a8451f" stroke-width="2" stroke-dasharray="3,2"/>
+  <text x="24" y="130" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" opacity="0">
+    Retrieval returns chunk 7. The answer is confidently wrong.
+    <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.4s"/></text>
+
+  <!-- with overlap -->
+  <text x="24" y="170" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#2e6b3e">O &#8805; L &#8212; a chunk exists that contains the whole span</text>
+  <rect x="24" y="180" width="340" height="30" rx="4" fill="#fff" stroke="#c9d6e2"/>
+  <rect x="250" y="216" width="340" height="30" rx="4" fill="#fff" stroke="#c9d6e2"/>
+  <rect x="480" y="180" width="226" height="30" rx="4" fill="#fff" stroke="#c9d6e2"/>
+  <text x="30" y="200" font-family="-apple-system,sans-serif" font-size="9.5" fill="#999">chunk 7</text>
+  <text x="256" y="236" font-family="-apple-system,sans-serif" font-size="9.5" fill="#999">chunk 8 (offset by the stride)</text>
+  <text x="486" y="200" font-family="-apple-system,sans-serif" font-size="9.5" fill="#999">chunk 9</text>
+  <rect x="250" y="222" width="200" height="18" rx="3" fill="#2e6b3e" opacity="0.85">
+    <animate attributeName="opacity" from="0.25" to="0.85" dur="0.8s" fill="freeze" begin="1.9s"/></rect>
+  <text x="255" y="235" font-family="-apple-system,sans-serif" font-size="9.5" fill="#fff" font-weight="700">&#8230;suicide exclusion except in Colorado&#8230;</text>
+  <text x="24" y="268" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" opacity="0">
+    Chunk 8 straddles the boundary. Cost: every token is stored C/(C&#8722;O) times.
+    <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="2.6s"/></text>
+  <text x="24" y="286" font-family="-apple-system,sans-serif" font-size="10" fill="#777">That storage multiplier is the entire price of the guarantee &#8212; and it is paid once, not on every query.</text>
+</svg>
+
+<h3>The second curve: signal density</h3>
+
+<p>Containment is only half of it. The other half is how much of the retrieved chunk is actually the answer — <code>L/C</code>. Everything else is noise you pay for <strong>twice</strong>: once in index RAM, and again in every prompt that retrieves it.</p>
+
+<table class="matrix-table">
+  <tr><th>Chunk size</th><th>P(span intact), L=40, 15% overlap</th><th>Signal density</th><th>What it means</th></tr>
+  <tr><td>128</td><td class="partial">80.7%</td><td class="yes">31.2%</td><td>Dense, but one answer in five is cut.</td></tr>
+  <tr><td>256</td><td class="yes">99.1%</td><td>15.6%</td><td>Safe and reasonably dense.</td></tr>
+  <tr><td>800</td><td class="yes">100%</td><td class="no">5.0%</td><td>Never splits, but 95% of every prompt is padding.</td></tr>
+  <tr><td>1600</td><td class="yes">100%</td><td class="no">2.5%</td><td>You are paying to send 39 irrelevant tokens per useful one.</td></tr>
+</table>
+
+<h2>3. Where the Money Actually Is</h2>
+
+<p>Week 2 costed the index. For a RAG system that is the small number. Retail, at 20 QPS peak on the agent path (<em>not</em> the 500 QPS product-search path — that distinction is worth 25× on this bill):</p>
+
+<svg viewBox="0 0 760 290" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">TWO COSTS, OPPOSITE DIRECTIONS &#8212; RETAIL, 3.2B TOKENS, 20 QPS PEAK</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Index falls as 1/C. Generation rises as C. Total has a minimum in between.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="70" font-weight="700" fill="#333">128 tok</text>
+    <rect x="90" y="59" height="13" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="103" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <rect x="193" y="59" height="13" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="128" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <text x="330" y="70" fill="#555" opacity="0">index $7,207 &#183; generation $8,988 &#183; <tspan font-weight="700">total $16,208</tspan>
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.1s"/></text>
+
+    <text x="24" y="96" font-weight="700" fill="#2e6b3e">200 tok</text>
+    <rect x="90" y="85" height="13" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="66" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <rect x="156" y="85" height="13" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="155" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <text x="330" y="96" fill="#2e6b3e" font-weight="700" opacity="0">index $4,621 &#183; generation $10,854 &#183; total $15,488 &#8592; MINIMUM
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.35s"/></text>
+
+    <text x="24" y="122" font-weight="700" fill="#333">400 tok</text>
+    <rect x="90" y="111" height="13" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="33" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <rect x="123" y="111" height="13" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="229" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <text x="365" y="122" fill="#555" opacity="0">index $2,311 &#183; generation $16,038 &#183; <tspan font-weight="700">total $18,361</tspan>
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+
+    <text x="24" y="148" font-weight="700" fill="#333">800 tok</text>
+    <rect x="90" y="137" height="13" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="17" dur="0.9s" fill="freeze" begin="0.95s"/></rect>
+    <rect x="107" y="137" height="13" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="377" dur="0.9s" fill="freeze" begin="0.95s"/></rect>
+    <text x="497" y="148" fill="#555" opacity="0">total $27,574
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.85s"/></text>
+
+    <text x="24" y="174" font-weight="700" fill="#a8451f">1600 tok</text>
+    <rect x="90" y="163" height="13" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="8" dur="0.9s" fill="freeze" begin="1.2s"/></rect>
+    <rect x="98" y="163" height="13" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="600" dur="0.9s" fill="freeze" begin="1.2s"/></rect>
+    <text x="24" y="196" fill="#a8451f" font-weight="700" opacity="0">total $47,732 &#8212; 3.1&#215; the optimum, and it is where an index-only cost model sends you
+      <animate attributeName="opacity" from="0" to="1" dur="0.4s" fill="freeze" begin="2.2s"/></text>
+  </g>
+
+  <rect x="90" y="224" width="14" height="11" fill="#1f5f8b"/>
+  <text x="110" y="234" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">index / infrastructure</text>
+  <rect x="250" y="224" width="14" height="11" fill="#c8602a"/>
+  <text x="270" y="234" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">generation (prompt tokens)</text>
+
+  <text x="24" y="262" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">At 1,600 tokens generation is <tspan font-weight="700">81.6&#215;</tspan> the infrastructure bill. Chunk size is an <tspan font-weight="700">LLM cost decision</tspan> that happens to also affect the index.</text>
+  <text x="24" y="279" font-family="-apple-system,sans-serif" font-size="10" fill="#777">Run chunk_cost_sweep.py &#8212; every number on this chart comes from it.</text>
+</svg>
+
+<div class="caution">
+<div class="label">The honest counterpoint — this depends on your retrieval policy</div>
+The U-shape above assumes <strong>fixed k</strong>: always retrieve 8 chunks, so halving the chunk size halves the prompt. If instead you hold the <em>context budget</em> constant and retrieve more, smaller chunks — <code>--fixed-context</code> — then generation cost is flat by construction and only the index moves, so <strong>large chunks win</strong>. Same corpus, opposite conclusion.
+<p style="margin-top:0.7rem;margin-bottom:0;">Which policy is right is an empirical question about whether <em>recall at a fixed context budget</em> improves with smaller chunks. It usually does, up to a point — but that is a claim to measure on a golden set (Day 4), not to assume. State the policy before quoting the cost, or the number means nothing.</p>
+</div>
+
+<h2>4. Try It — Chunk Size Explorer</h2>
+
+<div class="explorer">
+<h4>Chunk economics and answer survival</h4>
+
+<div class="ctl"><label for="cs">Chunk size (tokens)</label><input type="range" id="cs" min="64" max="2048" step="32" value="256"><span class="val" id="csv">256</span></div>
+<div class="ctl"><label for="ov">Overlap (% of chunk)</label><input type="range" id="ov" min="0" max="70" step="5" value="15"><span class="val" id="ovv">15%</span></div>
+<div class="ctl"><label for="sp">Answer span (tokens)</label><input type="range" id="sp" min="20" max="600" step="10" value="40"><span class="val" id="spv">40</span></div>
+<div class="ctl"><label for="tk">Top-k retrieved</label><input type="range" id="tk" min="1" max="20" step="1" value="8"><span class="val" id="tkv">8</span></div>
+<div class="ctl"><label for="ct">Corpus (M tokens)</label><input type="range" id="ct" min="50" max="4000" step="50" value="3200"><span class="val" id="ctv">3200</span></div>
+<div class="ctl"><label for="qp">RAG QPS (peak)</label><input type="range" id="qp" min="1" max="100" step="1" value="20"><span class="val" id="qpv">20</span></div>
+
+<div class="out">
+  <div class="brow"><span>Chunks in the corpus</span><span class="val" id="o_n">—</span></div>
+  <div class="bar" id="b_n" style="background:#6b7f95;width:0%"></div>
+  <div class="brow"><span>Index + infrastructure / month</span><span class="val" id="o_inf">—</span></div>
+  <div class="bar" id="b_inf" style="background:#1f5f8b;width:0%"></div>
+  <div class="brow"><span>Generation (prompt tokens) / month</span><span class="val" id="o_gen">—</span></div>
+  <div class="bar" id="b_gen" style="background:#c8602a;width:0%"></div>
+  <div class="brow"><span>P(answer span survives)</span><span class="val" id="o_p">—</span></div>
+  <div class="bar" id="b_p" style="background:#2e6b3e;width:0%"></div>
+  <div class="brow"><span>Signal density (L/C)</span><span class="val" id="o_d">—</span></div>
+  <div class="bar" id="b_d" style="background:#6b3fa0;width:0%"></div>
+  <div class="fin-verdict" id="o_v">—</div>
+</div>
+</div>
+
+<p>Two things worth doing with it. <strong>Drag the answer span up to 300</strong> (the insurance case) and watch containment collapse at every chunk size until you raise overlap past it. Then <strong>drag overlap up instead of chunk size</strong> and watch the generation bar stay still while containment jumps to 100% — that is the next section, discovered rather than told.</p>
+
+<h2>5. Buy Containment With Overlap, Not With Chunk Size</h2>
+
+<p>There are two ways to stop splitting answers, and they are priced completely differently:</p>
+
+<table class="matrix-table">
+  <tr><th>Lever</th><th>What it costs</th><th>Paid</th><th>Typical magnitude</th></tr>
+  <tr>
+    <td><strong>Raise chunk size</strong></td>
+    <td>More tokens in every prompt that retrieves the chunk.</td>
+    <td class="no">On <em>every query, forever</em></td>
+    <td>Linear in C, multiplied by traffic.</td>
+  </tr>
+  <tr>
+    <td><strong>Raise overlap</strong></td>
+    <td>Every token stored <code>C/(C−O)</code> times — more vectors, more index RAM.</td>
+    <td class="yes">Once, at ingest</td>
+    <td>1.2× at 15% overlap; 2.5× at 60%.</td>
+  </tr>
+</table>
+
+<p>Since generation dominates by 20–80× in every domain here, <strong>overlap is almost always the cheaper way to buy the guarantee.</strong> The sweep finds this without being told — it searches both axes:</p>
+
+<div class="code-inline">python chunk_cost_sweep.py --domain insurance
+
+  RECOMMENDATION
+  Chunk size      : 512 tokens, overlap 307 (60%)
+  P(span intact)  : 100.0%   (SLO 95%)
+  Signal density  : 58.6%
+  Cost            : $984/mo  (infra $201 + embed $1 + generation $781)
+
+  Holding overlap at 15% and buying containment with CHUNK SIZE instead
+  would mean 1600-token chunks at $1,927/mo — 2.0x more expensive for the
+  same guarantee, because every extra token rides along in every prompt.</div>
+
+<div class="verdict">
+<div class="label">The result, and why it is not the usual advice</div>
+<strong>512-token chunks with 60% overlap beat 1,600-token chunks with 15% overlap</strong> — same containment guarantee, <strong>half the cost</strong>, and signal density of 58.6% instead of 18.8%. Conventional guidance ("10–20% overlap") is a default that was never derived from anything; it is right for short answer spans and badly wrong for long ones. <strong>Overlap should be set from your answer-span length, not from a blog post.</strong>
+</div>
+
+<h3>The same sweep, three domains, three different answers</h3>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">corpus 3.2B tok<br>answer span ~40 tok<br>20 QPS peak</span></p>
+    <p><strong>200 tokens / 40 overlap (20%)</strong></p>
+    <p>20M chunks, $15,777/mo. Short answers — a spec value, a return window — mean small chunks stay intact, so retail can take the precision.</p>
+    <p>Cost minimum is genuinely U-shaped here; 1,600-token chunks cost <strong>3.1×</strong> the optimum.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">corpus 168M tok<br>answer span ~300 tok<br>1 QPS peak</span></p>
+    <p><strong>512 tokens / 307 overlap (60%)</strong></p>
+    <p>820k chunks, $984/mo. An answer is a clause <em>with</em> its qualifiers — the exclusion that modifies the grant, the definition the term rests on.</p>
+    <p>Anything under ~512 tokens fragments the answer, and <strong>a fragmented exclusion is a compliance incident, not a relevance miss.</strong></p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech documents</div>
+    <p><span class="kv">corpus 120M tok<br>answer span ~200 tok<br>3 QPS peak</span></p>
+    <p><strong>400 tokens / 200 overlap (50%)</strong></p>
+    <p>600k chunks, $2,165/mo. Regulatory clauses and dispute procedure — spans long enough to punish small chunks.</p>
+    <p>Corpus small enough that index cost <em>never</em> drives the decision: $147 of $2,165.</p>
+  </div>
+</div>
+
+<h2>6. The Four Strategies</h2>
+
+<table class="matrix-table">
+  <tr><th>Strategy</th><th>How it works</th><th>Advantages</th><th>Disadvantages</th><th>Choose it when</th></tr>
+  <tr>
+    <td><strong>Fixed-size</strong></td>
+    <td>Hard cut every N tokens, optionally with overlap.</td>
+    <td>Trivial, fast, perfectly predictable chunk count and cost.</td>
+    <td>Splits mid-sentence and mid-word. Quality is <strong>not monotonic</strong> in chunk size — see the caution below.</td>
+    <td>Baselines and cost modelling. Rarely the production answer.</td>
+  </tr>
+  <tr>
+    <td><strong>Recursive</strong></td>
+    <td>Split on the largest separator that fits, backing off <code>\n\n → \n → ". " → " "</code>.</td>
+    <td>Respects natural boundaries where they exist; <strong>degrades gracefully</strong> when they don't. Cheap.</td>
+    <td>Boundary quality depends entirely on the separator list. No awareness of meaning or hierarchy.</td>
+    <td class="yes"><strong>The default.</strong> Start here for anything unstructured.</td>
+  </tr>
+  <tr>
+    <td><strong>Sentence / semantic</strong></td>
+    <td>Sentence: pack whole sentences to a budget. Semantic: embed each sentence, cut where consecutive-sentence distance exceeds a percentile.</td>
+    <td>Never splits a sentence. Semantic finds real topic shifts a separator list can't see.</td>
+    <td>Semantic costs an <strong>embedding pass over every sentence at ingest</strong>, and the threshold is another hyperparameter. Published gains over good recursive splitting are often small.</td>
+    <td>Long-form prose with topic drift and no headings — transcripts, articles.</td>
+  </tr>
+  <tr>
+    <td><strong>Structure-aware</strong></td>
+    <td>Split on the document's own hierarchy (headings, sections, clauses), pack within a section, and <strong>stamp the section path onto every chunk</strong>.</td>
+    <td class="yes">Boundaries the author already chose, plus context that would otherwise be 400 tokens away.</td>
+    <td>Requires documents that <em>have</em> structure, and a parser per format.</td>
+    <td class="yes">Policy forms, regulatory text, API docs, contracts — anything filed or templated.</td>
+  </tr>
+</table>
+
+<h3>What the comparison actually shows</h3>
+
+<p><code>chunker_compare.py</code> runs all four over a policy excerpt and asks whether <em>any single chunk</em> can answer three real questions — including "does the suicide exclusion apply in Colorado?", where the carve-out is the last sentence of the clause.</p>
+
+<div class="code-inline">  Strategy            30      40      50      60      70      90     120
+  ----------------------------------------------------------------------
+  fixed         1/3     1/3     1/3     1/3     1/3     3/3     2/3
+  recursive     1/3     1/3     1/3     2/3     3/3     3/3     3/3
+  sentence      1/3     1/3     1/3     1/3     3/3     3/3     3/3
+  structural    3/3     3/3     3/3     3/3     3/3     3/3     3/3</div>
+
+<div class="verdict">
+<div class="label">Why structural wins — and it is not better boundaries</div>
+Every structural chunk carries its section path, so <em>"suicide, self-inflicted injury, or any cause excluded under Section 4.2"</em> arrives labelled <strong>ACCIDENTAL DEATH BENEFIT RIDER</strong> instead of arriving as an anonymous paragraph about suicide. The embedding changes, retrieval changes, and the model can tell what it is reading.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is also <strong>the cheapest possible version of contextual retrieval</strong>: you are prepending context the document already gave you, for free, at ingest. The expensive version — an LLM writing a bespoke summary for every chunk — buys more, but start here. A document with headings has already done most of the work and the usual pipeline throws it away.</p>
+</div>
+
+<div class="caution">
+<div class="label">Read the FIXED row again</div>
+It scores 3/3 at 90 tokens and drops back to <strong>2/3 at 120</strong>. Quality is <strong>not monotonic in chunk size</strong> for a chunker that ignores the document: a bigger chunk moves every boundary, and an alignment that happened to work stops working.
+<p style="margin-top:0.7rem;margin-bottom:0;">That is not a tuning curve you can climb — it is luck. It is also why <em>"we tuned chunk size on our eval set"</em> can quietly mean <em>"we overfit to which sentences happened to land together."</em> If your chunk-size sweep is noisy and non-monotonic, that is a signal your chunker is fighting the document, not a signal to sweep harder.</p>
+</div>
+
+<details>
+<summary>How semantic chunking actually works, and when it is worth the ingest cost</summary>
+<div class="details-body">
+<p>Embed every sentence. Walk consecutive pairs and compute distance. Where the distance exceeds some percentile (commonly the 95th) of all pair distances in the document, declare a topic boundary. Then pack sentences between boundaries up to your budget.</p>
+<p><strong>The costs nobody mentions:</strong> an embedding call per sentence at ingest (for a 3.2B-token corpus that is real money and real wall-clock); a percentile threshold that behaves differently on a 2-page memo than on a 200-page filing; and non-deterministic chunk counts, which makes cost planning and re-ingest diffs harder.</p>
+<p><strong>When it earns its place:</strong> long-form prose with genuine topic drift and no headings to exploit — call transcripts, research reports, support threads. If your documents have headings, structure-aware chunking gets you most of the benefit for none of the cost.</p>
+<p><strong>The interview framing:</strong> "I'd use semantic chunking where the document has no structure to exploit, and I'd measure it against recursive splitting before adopting it — the published gains are real but modest, and it adds an embedding pass to ingest plus a threshold to maintain."</p>
+</div>
+</details>
+
+<h2>7. Overlap Is Not Free in Retrieval Either</h2>
+
+<p>The storage multiplier is the obvious cost. The subtle one: <strong>overlapping chunks are near-duplicates, and near-duplicates compete for your top-k slots.</strong> With 60% overlap, the three highest-scoring chunks for a query are frequently three windows over the <em>same</em> passage — so a nominal k=6 delivers the diversity of k=2, and the other relevant passage never makes the cut.</p>
+
+<p>Two fixes, both cheap:</p>
+
+<table class="matrix-table">
+  <tr><th>Fix</th><th>How</th><th>Note</th></tr>
+  <tr>
+    <td><strong>Deduplicate by source span</strong></td>
+    <td>After retrieval, drop any chunk whose character range overlaps an already-selected chunk from the same document by more than ~50%.</td>
+    <td>Retrieve <code>k × 2</code> and dedupe down to <code>k</code>. Needs <code>doc_id</code>, <code>start_char</code>, <code>end_char</code> on every chunk — store them at ingest.</td>
+  </tr>
+  <tr>
+    <td><strong>Merge adjacent survivors</strong></td>
+    <td>If two retrieved chunks are contiguous or overlapping in the same document, stitch them into one passage before prompting.</td>
+    <td>Cuts duplicated tokens out of the prompt <em>and</em> repairs any span the boundary split. Strictly better than sending both.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">This is why high overlap needs deduplication to be safe</div>
+The 60% overlap recommended for insurance in §5 is the right call on containment and cost — <strong>but only with span-dedup in the retrieval path.</strong> Without it you have bought answer survival and paid for it in result diversity, which is a bad trade you will not notice in an aggregate metric. Ship the two together or neither.
+</div>
+
+<h2>8. The Metadata That Makes a Chunk Usable</h2>
+
+<p>A chunk is not a string. It is a string plus the fields that let you filter, cite, dedupe, and reproduce it — and Week 2 established that filter selectivity is the <em>load-bearing</em> architecture question, which means this table is a capacity decision, not bookkeeping.</p>
+
+<table class="matrix-table">
+  <tr><th>Field</th><th>Why</th><th>Domain that forces it</th></tr>
+  <tr><td><code>doc_id</code>, <code>chunk_ix</code></td><td>Parent lookup, adjacency, small-to-big (§9).</td><td>all</td></tr>
+  <tr><td><code>start_char</code>, <code>end_char</code></td><td>Span dedup and merging (§7). Precise citation.</td><td>all</td></tr>
+  <tr><td><code>section_path</code></td><td>The context the heading carried. Prepended to the text <em>and</em> stored for filtering.</td><td><span class="dtag ins">insurance</span></td></tr>
+  <tr><td><code>doc_version</code>, <code>effective_from</code>, <code>effective_to</code></td><td>Bitemporal retrieval: "what did the policy say <em>on the date of the claim</em>." Week 2 Day 1 built this schema.</td><td><span class="dtag ins">insurance</span></td></tr>
+  <tr><td><code>jurisdiction</code> / <code>state</code></td><td>State form variation. Retrieving the Texas endorsement for a Colorado policy is a filed-form error.</td><td><span class="dtag ins">insurance</span></td></tr>
+  <tr><td><code>content_hash</code></td><td>Skip re-embedding unchanged chunks on re-ingest. Turns a full re-embed into a delta.</td><td>all — this is what makes chunking changes affordable</td></tr>
+  <tr><td><code>category</code>, <code>brand</code>, <code>in_stock</code></td><td>The filters that decide whether you need an ANN index at all (Week 2 §10 Q5).</td><td><span class="dtag retail">retail</span></td></tr>
+</table>
+
+<div class="verdict">
+<div class="label"><code>content_hash</code> is the one people leave out and regret</div>
+Every chunking change is a full re-embed unless you can tell which chunks actually changed. With a content hash, editing one clause in one policy re-embeds a handful of chunks instead of 820,000. That converts "we can't change the chunking strategy, it's too expensive" — a sentence you will hear — into a routine deploy.
+</div>
+
+<h2>9. Small-to-Big: Stop Making One Object Do Both Jobs</h2>
+
+<p>Back to §1. The tension exists only because we assumed the retrieved unit and the generated-over unit are the same object. They don't have to be.</p>
+
+<svg viewBox="0 0 760 250" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs><marker id="s2b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker></defs>
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">SMALL-TO-BIG (PARENT DOCUMENT RETRIEVAL)</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Index small for precision. Return large for completeness. Two sizes, one pipeline.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <rect x="24" y="62" width="150" height="52" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="99" y="82" text-anchor="middle" font-weight="700" fill="#333">query</text>
+    <text x="99" y="98" text-anchor="middle" fill="#777">embedded once</text>
+
+    <line x1="176" y1="88" x2="212" y2="88" stroke="#8a8578" stroke-width="1.5" marker-end="url(#s2b)"/>
+
+    <rect x="216" y="62" width="180" height="52" rx="6" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="306" y="80" text-anchor="middle" font-weight="700" fill="#1f5f8b">search CHILD chunks</text>
+    <text x="306" y="95" text-anchor="middle" fill="#555">~200 tok &#183; precise embedding</text>
+    <text x="306" y="108" text-anchor="middle" fill="#777" font-size="9.5">this is what is in the index</text>
+
+    <line x1="398" y1="88" x2="434" y2="88" stroke="#8a8578" stroke-width="1.5" marker-end="url(#s2b)"/>
+
+    <rect x="438" y="62" width="168" height="52" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="522" y="82" text-anchor="middle" font-weight="700" fill="#333">map child &#8594; parent</text>
+    <text x="522" y="98" text-anchor="middle" fill="#777">b-tree lookup on doc_id</text>
+
+    <line x1="608" y1="88" x2="644" y2="88" stroke="#8a8578" stroke-width="1.5" marker-end="url(#s2b)"/>
+
+    <rect x="648" y="62" width="88" height="52" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.2s"/></rect>
+    <text x="692" y="82" text-anchor="middle" font-weight="700" fill="#2e6b3e" opacity="0">send PARENT
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.4s"/></text>
+    <text x="692" y="98" text-anchor="middle" fill="#555" opacity="0">~1600 tok
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.4s"/></text>
+  </g>
+
+  <text x="24" y="146" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#333">What each side gets</text>
+  <text x="24" y="166" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8226; <tspan font-weight="700">Retrieval</tspan> gets a 200-token embedding &#8212; sharp, single-topic, high signal density.</text>
+  <text x="24" y="184" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8226; <tspan font-weight="700">Generation</tspan> gets the full clause with its exceptions, headings and qualifiers intact.</text>
+  <text x="24" y="202" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">&#8226; <tspan font-weight="700">Containment stops mattering</tspan> for the parent: the answer span is inside it by construction.</text>
+  <text x="24" y="228" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a8451f">The cost you accept: parents are big, so prompt tokens go back up. Dedupe parents &#8212; several children usually map to one.</text>
+</svg>
+
+<p>The implementation is unglamorous, which is the point — <strong>the parent lookup is a b-tree point read on <code>doc_id</code>, not a second vector search.</strong> You already store the parent text; the child chunks are just an index over it.</p>
+
+<div class="code-inline">-- children carry the vector; parents carry the text
+CREATE TABLE parent_chunk (
+  parent_id   bigserial PRIMARY KEY,
+  doc_id      bigint NOT NULL,
+  section_path text,
+  body        text NOT NULL          -- ~1600 tokens, no embedding
+);
+
+CREATE TABLE child_chunk (
+  child_id    bigserial PRIMARY KEY,
+  parent_id   bigint NOT NULL REFERENCES parent_chunk,
+  start_char  int NOT NULL,
+  end_char    int NOT NULL,
+  body        text NOT NULL,         -- ~200 tokens
+  embedding   vector(1536) NOT NULL  -- only the CHILD is indexed
+);
+
+CREATE INDEX ON child_chunk USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON child_chunk (parent_id);   -- the "big" half of small-to-big</div>
+
+<div class="caution">
+<div class="label">Where small-to-big stops helping</div>
+If several retrieved children map to the <em>same</em> parent, you have spent k retrieval slots to fetch one passage — the §7 diversity problem wearing a different hat. <strong>Dedupe parents before prompting and backfill the freed slots</strong> from the next-ranked children. And if parents are large, you have re-created the generation cost you avoided by indexing small: measure the prompt, don't assume it shrank.
+</div>
+
+<h2>10. How to Actually Choose — and What to Measure</h2>
+
+<p>The sweep gives you a starting point from geometry. It cannot tell you whether <em>your</em> answer spans are 40 or 300 tokens, and that single input dominates the recommendation. So the first task is not tuning — it is measurement.</p>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Step</th><th>Why this order</th></tr>
+  <tr><td>1</td><td><strong>Measure your answer-span length.</strong> Take 50 real questions, find the passage that answers each, and record its token length. Use the 90th percentile, not the mean.</td><td>It sets both the overlap floor and the chunk-size floor. Everything downstream is guesswork without it. p90, because the tail is where confident-wrong answers come from.</td></tr>
+  <tr><td>2</td><td><strong>Set overlap ≥ p90 answer span.</strong></td><td>Buys containment at storage cost instead of prompt cost (§5).</td></tr>
+  <tr><td>3</td><td><strong>Take the smallest chunk size above that</strong> which your cost model tolerates.</td><td>Signal density falls as <code>1/C</code>; you pay for noise in RAM and in every prompt.</td></tr>
+  <tr><td>4</td><td><strong>Use structure where it exists</strong>, recursive where it doesn't.</td><td>Free context, and robust to chunk budget (§6).</td></tr>
+  <tr><td>5</td><td><strong>Evaluate per query class, not in aggregate.</strong></td><td>Week 2 Day 4's finding, and it applies here with force — see below.</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">Step 5 is where chunk-size evaluations usually go wrong</div>
+Week 2 Day 4 showed an aggregate nDCG improving (+0.049) while the revenue-weighted number went <em>down</em> (−0.009). Chunk size is worse, because it affects query classes in <strong>opposite directions</strong>: small chunks help pinpoint lookups ("what's the return window") and hurt synthesis questions ("how does this rider interact with the base policy"). An aggregate score averages a win and a loss into a shrug.
+<p style="margin-top:0.7rem;margin-bottom:0;">Report chunk-size sweeps <strong>per class, always.</strong> If small chunks win on lookup and lose on synthesis — which is the usual pattern — that is not a tie, it is an argument for routing or for small-to-big, and the aggregate hid it.</p>
+</div>
+
+<h2>11. Companion Scripts</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it computes</th></tr>
+  <tr>
+    <td><code>week3/day1/chunk_cost_sweep.py</code></td>
+    <td>The joint quality/cost sweep. Prices index and generation together across chunk sizes, computes P(answer survives) and signal density from geometry, and searches the chunk × overlap grid for the cheapest setting meeting a containment SLO. <code>--domain</code>, <code>--answer-span</code>, <code>--fixed-context</code>, <code>--containment-slo</code>.</td>
+  </tr>
+  <tr>
+    <td><code>week3/day1/chunker_compare.py</code></td>
+    <td>Four chunkers over one policy excerpt, scored on whether any single chunk can answer three real cross-reference questions. Sweeps the chunk budget to show <em>how small a chunk each strategy survives</em> — structural holds at 30 tokens, recursive needs 70, fixed is non-monotonic. <code>--show-chunks</code> prints the actual output.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week3/day1
+python chunk_cost_sweep.py --domain retail          # U-shaped total cost
+python chunk_cost_sweep.py --domain insurance       # 60% overlap beats big chunks
+python chunk_cost_sweep.py --domain retail --fixed-context   # opposite conclusion
+python chunk_cost_sweep.py --answer-span 300 --containment-slo 0.99
+python chunker_compare.py                           # robustness vs chunk budget
+python chunker_compare.py --size 50 --show-chunks   # see where it breaks</div>
+
+<h2>12. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Chunking Check</h3>
+
+<div class="quiz">
+<div class="q">1. Your answer spans are typically 300 tokens. You use 400-token chunks with 15% overlap. What fraction of answers land entirely inside one chunk?</div>
+<button data-correct="false">100% — the chunk is larger than the span, so the span always fits.</button>
+<button data-correct="true">About 29%. With C=400, L=300, O=60, the stride is 340 and only (400−300)=100 of every 340 start positions are safe: 100/340 ≈ 29%. Nearly three out of four answers get split.</button>
+<button data-correct="false">85% — overlap of 15% recovers most boundary cases.</button>
+<button data-correct="false">Impossible to say without knowing the embedding model.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. You need to stop splitting 300-token answers. Raising chunk size to 1,600 tokens works. So does keeping 512-token chunks and raising overlap to 60%. Why is the second cheaper?</div>
+<button data-correct="false">Because overlap does not increase the number of vectors stored.</button>
+<button data-correct="true">Because overlap is paid once at ingest as storage (2.5× more vectors) while chunk size is paid again in every prompt that retrieves the chunk. Generation dominates infrastructure by 20–80×, so the storage multiplier is the cheaper currency — $984/mo vs $1,927/mo for the same guarantee.</button>
+<button data-correct="false">Because smaller chunks produce better embeddings, which reduces the number of chunks you need to retrieve.</button>
+<button data-correct="false">Because overlapping chunks compress better in the HNSW graph.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Week 2 said halving chunk size doubles infrastructure cost. Today's sweep says total cost may <em>fall</em>. Which is right?</div>
+<button data-correct="false">Week 2 — the sweep double-counts the embedding cost.</button>
+<button data-correct="false">Today — Week 2 forgot that smaller chunks compress better.</button>
+<button data-correct="true">Both, for different halves of the bill. Halving C doubles the index <em>and</em> halves the prompt. Under fixed-k, generation dominates so total cost falls until the index catches up — the curve is U-shaped with a minimum. Under a fixed context budget, generation is flat and only the index moves, so large chunks win. The retrieval policy decides which is true.</button>
+<button data-correct="false">Neither — chunk size has no reliable effect on cost in either direction.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. In the chunker comparison, fixed-size chunking scores 3/3 at 90 tokens and 2/3 at 120 tokens. What should you conclude?</div>
+<button data-correct="false">120 tokens exceeds the model's optimal input length, so quality degrades.</button>
+<button data-correct="true">That fixed-size chunk quality is not monotonic — a bigger chunk moves every boundary, so an alignment that happened to work stops working. A noisy, non-monotonic chunk-size sweep is a signal that the chunker is fighting the document, not a signal to sweep harder. It also means "we tuned chunk size on our eval set" can mean "we overfit to which sentences landed together."</button>
+<button data-correct="false">The eval set is too small to distinguish 90 from 120.</button>
+<button data-correct="false">Overlap was scaled with chunk size, and the larger overlap crowded out relevant content.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Structure-aware chunking beat the others at every budget in the comparison. What was the actual mechanism?</div>
+<button data-correct="false">It placed boundaries at semantically optimal positions found by embedding similarity.</button>
+<button data-correct="true">It stamped the section path onto every chunk, so text arrives labelled "ACCIDENTAL DEATH BENEFIT RIDER" rather than as an anonymous paragraph about suicide. The context was already in the document, 400 tokens above the clause; the other strategies discard it. It's the cheapest form of contextual retrieval.</button>
+<button data-correct="false">It produced fewer, larger chunks, so more context fit into each one.</button>
+<button data-correct="false">It used an LLM to summarise each section before embedding.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. You raise overlap to 60% for the insurance corpus. What must ship alongside it?</div>
+<button data-correct="false">A larger HNSW <code>m</code> parameter, to handle the increased vector count.</button>
+<button data-correct="true">Span-level deduplication in the retrieval path. At 60% overlap the top-ranked chunks are frequently several windows over the same passage, so a nominal k=6 delivers the diversity of k=2 and the second relevant passage never surfaces. Store <code>doc_id</code>/<code>start_char</code>/<code>end_char</code>, retrieve 2k, dedupe to k, and merge adjacent survivors.</button>
+<button data-correct="false">A reranker, since overlapping chunks confuse the first-stage scores.</button>
+<button data-correct="false">Nothing — overlap only affects storage, not retrieval results.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Small-to-big retrieval indexes 200-token children and returns 1,600-token parents. What does the parent lookup cost?</div>
+<button data-correct="false">A second ANN search over a separate parent index.</button>
+<button data-correct="true">A b-tree point read on <code>parent_id</code> — the parents are never embedded or indexed for vector search at all. That's why the pattern is cheap: you get precise retrieval and complete context without a second vector index, and containment stops mattering for the parent because the answer is inside it by construction.</button>
+<button data-correct="false">A full-text search against the parent table to confirm relevance.</button>
+<button data-correct="false">Nothing — the parent text is stored inside the child's metadata.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">8. Why should a chunk-size sweep always be reported per query class?</div>
+<button data-correct="false">Because different classes use different embedding models.</button>
+<button data-correct="true">Because chunk size moves classes in opposite directions — small chunks help pinpoint lookups and hurt synthesis questions. An aggregate score averages a win and a loss into a shrug, exactly as Week 2 Day 4's aggregate nDCG rose while the revenue-weighted figure fell. A split result is not a tie; it's an argument for routing or small-to-big.</button>
+<button data-correct="false">Because per-class reporting produces higher scores and is easier to justify.</button>
+<button data-correct="false">Because query classes have different latency SLAs.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help measuring your own answer-span distribution, building the span-dedup step, or wiring the parent/child schema into an existing pgvector table? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../../week2/day6-7/0012-checkpoint-pgvector-justification.html">&larr; Week 2 Day 6-7: ADR-002</a>
+<a href="../day2/0014-dense-sparse-hybrid.html">Day 2: Dense vs Sparse vs Hybrid &rarr;</a>
+</div>
+
+<script>
+(function () {
+  var ids = ['cs','ov','sp','tk','ct','qp'];
+  var el = {};
+  ids.forEach(function (i) { el[i] = document.getElementById(i); });
+
+  var PG_RAM_GB_MONTH = 11.0, HEADROOM = 1.8, DIMS = 1536;
+  var LLM_IN = 0.25, LLM_OUT = 1.25, OUT_TOK = 350;
+  var PEAK_TO_AVG = 0.25, SEC_PER_MONTH = 2592000;
+
+  function money(v) {
+    if (v >= 1000) return '$' + Math.round(v / 100) / 10 + 'k';
+    return '$' + Math.round(v);
+  }
+
+  function recompute() {
+    var C = +el.cs.value, ovPct = +el.ov.value / 100, L = +el.sp.value;
+    var k = +el.tk.value, corpus = +el.ct.value * 1e6, qps = +el.qp.value;
+
+    var O = Math.round(C * ovPct), S = Math.max(1, C - O);
+    document.getElementById('csv').textContent = C;
+    document.getElementById('ovv').textContent = Math.round(ovPct * 100) + '% (' + O + ')';
+    document.getElementById('spv').textContent = L;
+    document.getElementById('tkv').textContent = k;
+    document.getElementById('ctv').textContent = +el.ct.value;
+    document.getElementById('qpv').textContent = qps;
+
+    var n = corpus / S;
+    var heapGB = n * (DIMS * 4 + 40) / 1e9;
+    var ramGB = Math.max(8, (heapGB * 2) * HEADROOM);
+    var infra = ramGB * PG_RAM_GB_MONTH + heapGB * 0.10;
+
+    var queries = qps * PEAK_TO_AVG * SEC_PER_MONTH;
+    var gen = queries * (k * C) / 1e6 * LLM_IN + queries * OUT_TOK / 1e6 * LLM_OUT;
+
+    var p = (L >= C) ? 0 : (O >= L ? 1 : Math.max(0, (C - L) / S));
+    var density = Math.min(1, L / C);
+
+    document.getElementById('o_n').textContent =
+      n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1000) + 'k';
+    document.getElementById('o_inf').textContent = money(infra) + '/mo';
+    document.getElementById('o_gen').textContent = money(gen) + '/mo';
+    document.getElementById('o_p').textContent = (p * 100).toFixed(1) + '%';
+    document.getElementById('o_d').textContent = (density * 100).toFixed(1) + '%';
+
+    var maxCost = Math.max(infra, gen, 1);
+    document.getElementById('b_n').style.width = Math.min(100, n / 4e7 * 100) + '%';
+    document.getElementById('b_inf').style.width = (infra / maxCost * 100) + '%';
+    document.getElementById('b_gen').style.width = (gen / maxCost * 100) + '%';
+    document.getElementById('b_p').style.width = (p * 100) + '%';
+    document.getElementById('b_d').style.width = (density * 100) + '%';
+
+    var v = document.getElementById('o_v'), msg, bg, fg;
+    if (p === 0) {
+      msg = 'BROKEN — the chunk (' + C + ') is smaller than the answer span (' + L +
+            '). No chunk can contain the answer. Reranking cannot fix this; the ' +
+            'information was destroyed at ingest.';
+      bg = '#fdf4ef'; fg = '#a8451f';
+    } else if (p < 0.95) {
+      var need = L;
+      msg = 'FRAGMENTING — ' + ((1 - p) * 100).toFixed(0) + '% of answers get split. ' +
+            'Raise overlap to at least ' + need + ' tokens (' +
+            Math.ceil(need / C * 100) + '% of this chunk size) and containment ' +
+            'becomes guaranteed, for a ' + (C / Math.max(1, C - need)).toFixed(1) +
+            'x storage multiplier.';
+      bg = '#fdf4ef'; fg = '#a8451f';
+    } else {
+      msg = 'SAFE — containment ' + (p * 100).toFixed(1) + '%. Total ' +
+            money(infra + gen) + '/mo, of which generation is ' +
+            (gen / Math.max(infra, 1)).toFixed(1) + 'x infrastructure. ' +
+            (density < 0.15
+              ? 'But signal density is only ' + (density * 100).toFixed(0) +
+                '% — try a smaller chunk with the same overlap.'
+              : 'Signal density is healthy.');
+      bg = '#f0f6f1'; fg = '#2e6b3e';
+    }
+    v.textContent = msg;
+    v.style.background = bg;
+    v.style.color = fg;
+  }
+
+  ids.forEach(function (i) { el[i].addEventListener('input', recompute); });
+  recompute();
+})();
+</script>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>
