@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0009 — Scale Tradeoffs: Where pgvector Actually Breaks</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .wall { background:#fff; border:1px solid #e2ded8; border-radius:9px; padding:1.1rem 1.4rem; margin:1.2rem 0; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
+  .wall .n { display:inline-block; background:#1f5f8b; color:#fff; width:26px; height:26px; line-height:26px; text-align:center; border-radius:50%; font-weight:700; font-size:0.85rem; margin-right:0.5rem; }
+  .wall h3 { display:inline; font-size:1.15rem; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains ul { margin:0 0 0 1rem; }
+  .domains li { margin-bottom:0.3rem; font-size:0.87rem; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>Scale Tradeoffs — Where pgvector Actually Breaks</h1>
+<p class="subtitle">Week 2, Day 3 — the five walls, in the order you hit them, with numbers</p>
+
+<p>Day 2 named four migration triggers. The <strong>volume</strong> one was the vaguest — "roughly 50M+ vectors." That is not an architect's answer; it is a number repeated from blog posts. Today we derive it, because in an interview the follow-up is always <em>"why that number?"</em> and the credible answer is a capacity model, not a threshold you memorised.</p>
+
+<div class="verdict">
+<div class="label">The thing to internalise today</div>
+pgvector does not degrade gracefully. Four of its five limits are <strong>cliffs</strong>, not slopes — the system is fine, then a threshold is crossed and P99 latency moves by 25–100×. Knowing <em>where</em> each cliff sits, and which one you hit first, is the whole skill.
+</div>
+
+<h2>1. The Real Memory Model (Refining Day 1)</h2>
+
+<p>Day 1 used a rule of thumb: "HNSW adds ~30–60% on top of the heap." That is fine for a back-of-envelope, and wrong for capacity planning. The reason matters:</p>
+
+<div class="math-box">
+pgvector's HNSW index stores a <em>full copy</em> of every vector inside the index.
+</div>
+
+<p>The index is not a set of pointers into the heap — traversal needs the vector at each node to compute distance, so the vector is duplicated. The correct per-row model:</p>
+
+<div class="code-inline">vector_bytes   = dims × 4                      # float32; halfvec = dims × 2
+
+heap_per_row   = vector_bytes + ~40 B          # tuple header + your other columns
+
+hnsw_per_row   = vector_bytes                  # the duplicated copy
+               + (2 × m) × 8 B                 # neighbour list: layer 0 holds 2m links
+               + ~24 B                         # element header
+
+index_total    = N × hnsw_per_row / 0.9        # ~90% page fill factor</div>
+
+<p>For the running example — 4M SKUs, 1536 dims, m=16:</p>
+
+<table class="matrix-table">
+  <tr><th>Component</th><th>Per row</th><th>× 4M rows</th></tr>
+  <tr><td>Vector payload</td><td>6,144 B</td><td>24.6 GB</td></tr>
+  <tr><td>Heap (vector + tuple overhead)</td><td>~6,184 B</td><td><strong>24.7 GB</strong></td></tr>
+  <tr><td>HNSW neighbour lists (2×16 links × 8 B)</td><td>256 B</td><td>1.0 GB</td></tr>
+  <tr><td>HNSW index total (incl. vector copy, fill factor)</td><td>~7,138 B</td><td><strong>28.6 GB</strong></td></tr>
+  <tr><td><strong>Combined on disk</strong></td><td>—</td><td><strong>~53 GB</strong></td></tr>
+</table>
+
+<p>So the index is roughly <strong>105–115% of the heap</strong>, not 30–60%. At 1536 dims the vector copy dominates everything else; the graph itself is under 4% of the index. That single fact drives every mitigation later in this lesson — <em>shrink the vector and everything shrinks</em>.</p>
+
+<details>
+<summary>When does the graph overhead actually matter?</summary>
+<div class="details-body">
+<p>Only at low dimensionality. The neighbour list is a fixed 2m×8 bytes regardless of dims:</p>
+<ul>
+  <li><strong>1536 dims:</strong> vector 6144 B vs links 256 B → links are 4% of the index.</li>
+  <li><strong>384 dims</strong> (bge-small): vector 1536 B vs links 256 B → links are 14%.</li>
+  <li><strong>64 dims:</strong> vector 256 B vs links 256 B → links are <em>half</em> the index.</li>
+</ul>
+<p>Practical consequence: raising <code>m</code> from 16 to 48 for better recall costs you ~4% more index at 1536 dims but ~40% more at 384 dims. The "just increase m" advice has very different price tags depending on your embedding size.</p>
+</div>
+</details>
+
+<h2>2. Wall #1 — RAM, and Why It Is a Cliff</h2>
+
+<div class="wall">
+<span class="n">1</span><h3>The index must live in memory. When it doesn't, you fall off an edge.</h3>
+<p style="margin-top:0.8rem;margin-bottom:0;">Postgres has no vector-specific cache. Index pages compete for <code>shared_buffers</code> and the OS page cache like any other relation. While the working set fits, HNSW traversal is pure memory access at ~2ms. When it doesn't, every graph hop becomes a disk read.</p>
+</div>
+
+<p>Here is the part most people get wrong, and it is the best thing you can say on this topic in an interview:</p>
+
+<div class="math-box">
+HNSW traversal is <em>pointer chasing</em>. Each hop's address depends on the previous hop's result.
+</div>
+
+<p>You cannot prefetch it, you cannot parallelise it, and queue depth does not help. A NVMe drive rated for 500k IOPS delivers that number at queue depth 64 — but graph traversal runs at <strong>queue depth 1</strong>. What you actually pay is raw per-read latency, once per hop, serially.</p>
+
+<table class="matrix-table">
+  <tr><th>Storage</th><th>Random read latency (QD1)</th><th>~100 dependent hops</th><th>Regime</th></tr>
+  <tr><td>RAM (page cache hit)</td><td>~100 ns</td><td><strong>~2 ms total query</strong></td><td>Design target</td></tr>
+  <tr><td>Local NVMe</td><td>~80–100 µs</td><td><strong>~10 ms</strong></td><td>Degraded but survivable</td></tr>
+  <tr><td>EBS gp3 / network SSD</td><td>~500 µs – 1 ms</td><td><strong>50–100 ms</strong></td><td>P99 collapse</td></tr>
+</table>
+
+<svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="280" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">THE RAM CLIFF — P99 LATENCY vs CORPUS SIZE (FIXED 64 GB INSTANCE)</text>
+
+  <!-- axes -->
+  <line x1="70" y1="230" x2="660" y2="230" stroke="#999" stroke-width="1.5"/>
+  <line x1="70" y1="60" x2="70" y2="230" stroke="#999" stroke-width="1.5"/>
+  <text x="55" y="235" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">2ms</text>
+  <text x="55" y="180" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">10ms</text>
+  <text x="55" y="120" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">50ms</text>
+  <text x="55" y="70" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">150ms</text>
+
+  <!-- flat region — draws itself -->
+  <path d="M 70 226 L 380 222" stroke="#2e6b3e" stroke-width="3" fill="none"
+        stroke-dasharray="320" stroke-dashoffset="320">
+    <animate attributeName="stroke-dashoffset" from="320" to="0" dur="2.2s" fill="freeze" begin="0.3s"/>
+  </path>
+  <!-- knee + cliff — draws itself, after the flat part -->
+  <path d="M 380 222 Q 420 218 445 175 Q 465 135 490 95 Q 520 72 600 66" stroke="#c5221f" stroke-width="3" fill="none"
+        stroke-dasharray="290" stroke-dashoffset="290">
+    <animate attributeName="stroke-dashoffset" from="290" to="0" dur="1.8s" fill="freeze" begin="2.5s"/>
+  </path>
+
+  <!-- the marker riding the curve: green while cached, red once it falls off -->
+  <circle r="6" fill="#2e6b3e" stroke="#fff" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;1;1;0" dur="4.3s" keyTimes="0;0.07;0.5;0.52" fill="freeze" begin="0.3s"/>
+    <animateMotion dur="2.2s" fill="freeze" begin="0.3s" path="M 70 226 L 380 222"/>
+  </circle>
+  <circle r="7" fill="#c5221f" stroke="#fff" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="2.5s"/>
+    <animateMotion dur="1.8s" fill="freeze" begin="2.5s"
+                   path="M 380 222 Q 420 218 445 175 Q 465 135 490 95 Q 520 72 600 66"/>
+    <animate attributeName="r" values="7;11;7" dur="0.9s" repeatCount="indefinite" begin="4.3s"/>
+  </circle>
+
+  <!-- fit boundary -->
+  <line x1="400" y1="55" x2="400" y2="240" stroke="#a8451f" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <text x="406" y="52" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" font-weight="700">index no longer fits RAM</text>
+
+  <!-- x labels -->
+  <text x="110" y="250" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">2M</text>
+  <text x="240" y="250" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">5M</text>
+  <text x="380" y="250" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">8M</text>
+  <text x="500" y="250" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">12M</text>
+  <text x="620" y="250" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">20M</text>
+  <text x="365" y="268" font-family="-apple-system,sans-serif" font-size="10" fill="#333">corpus size (1536-dim vectors)</text>
+
+  <text x="150" y="210" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" font-weight="700">flat — everything cached</text>
+  <text x="480" y="115" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f" font-weight="700">every graph hop = a disk seek</text>
+  <text x="480" y="130" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f">at queue depth 1</text>
+</svg>
+
+<p>Note the shape: nothing warns you. Capacity dashboards show healthy latency right up to the knee, because until the working set exceeds cache the miss rate is ~0. Then it goes non-linear over a matter of weeks of catalog growth.</p>
+
+<div class="caution">
+<div class="label">The monitoring you need before you need it</div>
+Track <code>shared_buffers</code> hit ratio <em>for the vector index specifically</em> via <code>pg_statio_user_indexes</code> (<code>idx_blks_hit</code> vs <code>idx_blks_read</code>). A hit ratio drifting below ~99% on the HNSW index is the leading indicator of the cliff. Aggregate database cache-hit ratio will look fine and tell you nothing — the vector index is a small fraction of total block accesses right up until it isn't.
+</div>
+
+<h2>3. Wall #2 — CPU and the QPS Ceiling You Share With OLTP</h2>
+
+<div class="wall">
+<span class="n">2</span><h3>Vector search is CPU-bound, and it is competing with your application's normal queries.</h3>
+</div>
+
+<p>Per query, HNSW at <code>ef_search=100</code> performs on the order of several hundred distance computations. Each 1536-dim cosine distance is ~6 KB of memory traffic and ~1,536 fused multiply-adds — SIMD makes the arithmetic nearly free, so it is <strong>memory-bandwidth bound, not FLOP bound</strong>.</p>
+
+<p>Planning heuristic (validate with <code>pgbench</code> on your own hardware before quoting it):</p>
+
+<div class="math-box">
+~200–400 QPS per core at 1536 dims, ef_search=100, index fully cached
+</div>
+
+<p>The architectural point is not the number — it is <em>whose</em> cores those are:</p>
+
+<ul>
+  <li>A 16-vCPU instance gives you a theoretical ~3,000–6,000 vector QPS.</li>
+  <li>But that same instance is serving your order writes, inventory reads, and session queries.</li>
+  <li>At 500 vector QPS you have consumed 1.5–2.5 cores <em>continuously</em>. At Black Friday's 2,000 QPS you have consumed 6–10 cores, and your checkout transactions are now queueing behind product searches.</li>
+</ul>
+
+<p>This is the failure mode nobody plans for: <strong>the vector workload does not fall over — your OLTP workload does.</strong> A latency regression in checkout traced back to search traffic is a genuinely bad incident, and it is an argument for isolation (a read replica dedicated to search) long before it is an argument for a different database.</p>
+
+<h2>4. Wall #3 — Writes, Bloat, and the Cost of Rebuilding</h2>
+
+<div class="wall">
+<span class="n">3</span><h3>HNSW inserts are graph mutations, and deletes leave tombstones the graph can't forget.</h3>
+</div>
+
+<p>An HNSW insert is not an append. It runs a search to find neighbours, then updates bidirectional links on existing nodes — meaning a single insert dirties pages scattered across the index, which then flow through WAL and out to your replicas.</p>
+
+<table class="matrix-table">
+  <tr><th>Operation</th><th>Cost characteristic</th><th>What it does to you at 4M rows</th></tr>
+  <tr><td>Single INSERT</td><td>~1 search + link updates on ~2m nodes</td><td>Roughly an order of magnitude more expensive than a b-tree insert</td></tr>
+  <tr><td>UPDATE of embedding</td><td>Delete + insert (new heap tuple)</td><td>Old graph node becomes a tombstone</td></tr>
+  <tr><td>DELETE</td><td>Marks dead; graph node remains as a traversal waypoint</td><td>Recall and latency drift as dead ratio grows</td></tr>
+  <tr><td><code>VACUUM</code></td><td>Reclaims heap; HNSW cleanup is limited</td><td>Does <em>not</em> restore an over-churned graph's quality</td></tr>
+  <tr><td><code>REINDEX CONCURRENTLY</code></td><td>Full rebuild; needs ~2× index space</td><td>Tens of minutes to hours, +29 GB transient disk</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">The seasonal-catalog trap</div>
+Retail catalogs churn hard twice a year. A collection that is 30% re-embedded and 10% delisted over a season leaves a graph whose links point through large numbers of dead nodes — you pay traversal cost for entries that can never be returned. Recall degrades <em>silently</em>; latency creeps. The fix is a periodic <code>REINDEX CONCURRENTLY</code>, which means you need a maintenance window with 2× index headroom on disk, and it competes for the same CPU serving queries (Day 2's Milvus contrast: dedicated index nodes exist precisely to avoid this).
+</div>
+
+<div class="code-inline">-- Bulk load pattern: never insert into an existing HNSW index at volume.
+-- Build the index AFTER the load; it is dramatically faster and yields a better graph.
+DROP INDEX IF EXISTS products_embedding_hnsw;
+
+-- Give the build room, or it spills to disk and takes hours instead of minutes.
+SET maintenance_work_mem = '16GB';
+SET max_parallel_maintenance_workers = 7;   -- pgvector parallelises HNSW builds
+
+CREATE INDEX CONCURRENTLY products_embedding_hnsw
+    ON products USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);</div>
+
+<h2>5. Wall #4 — Replica Economics</h2>
+
+<div class="wall">
+<span class="n">4</span><h3>pgvector scales reads by replicating the entire index. That is linear cost, not sharding.</h3>
+</div>
+
+<p>This is the most under-appreciated limit, and the cleanest way to explain why pgvector's ceiling is economic rather than technical.</p>
+
+<p>To double read throughput you add a replica. But a replica is a <em>full copy</em> — it needs the whole 28.6 GB index resident in <em>its own</em> RAM to stay off the cliff. Contrast with Milvus, where adding a query node adds capacity against a <em>sharded</em> index; each node holds a slice.</p>
+
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="250" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">SCALING READS: REPLICATION vs SHARDING</text>
+
+  <text x="28" y="52" font-family="-apple-system,sans-serif" font-size="11" fill="#a8451f" font-weight="700">pgvector — replicate (each node holds 100%)</text>
+  <rect x="28" y="62" width="90" height="58" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="73" y="86" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a1a" text-anchor="middle">Primary</text>
+  <text x="73" y="103" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" text-anchor="middle" font-weight="700">29 GB</text>
+  <rect x="130" y="62" width="90" height="58" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="175" y="86" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a1a" text-anchor="middle">Replica 1</text>
+  <text x="175" y="103" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" text-anchor="middle" font-weight="700">29 GB</text>
+  <rect x="232" y="62" width="90" height="58" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="277" y="86" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a1a" text-anchor="middle">Replica 2</text>
+  <text x="277" y="103" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" text-anchor="middle" font-weight="700">29 GB</text>
+  <text x="28" y="140" font-family="-apple-system,sans-serif" font-size="10.5" fill="#c5221f" font-weight="700">3× read capacity costs 3× the RAM. Corpus growth hits every node at once.</text>
+
+  <text x="28" y="176" font-family="-apple-system,sans-serif" font-size="11" fill="#2e6b3e" font-weight="700">Milvus — shard (each node holds a slice)</text>
+  <rect x="28" y="186" width="90" height="44" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="73" y="204" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a1a" text-anchor="middle">Query node 1</text>
+  <text x="73" y="220" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" text-anchor="middle" font-weight="700">10 GB</text>
+  <rect x="130" y="186" width="90" height="44" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="175" y="204" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a1a" text-anchor="middle">Query node 2</text>
+  <text x="175" y="220" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" text-anchor="middle" font-weight="700">10 GB</text>
+  <rect x="232" y="186" width="90" height="44" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="277" y="204" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a1a" text-anchor="middle">Query node 3</text>
+  <text x="277" y="220" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" text-anchor="middle" font-weight="700">10 GB</text>
+  <text x="340" y="205" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">Same 29 GB total. Adding nodes adds</text>
+  <text x="340" y="221" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">capacity AND raises the volume ceiling.</text>
+
+  <text x="340" y="84" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Replication scales QPS.</text>
+  <text x="340" y="101" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">It does <tspan font-weight="700">not</tspan> raise the volume ceiling —</text>
+  <text x="340" y="118" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">one node still holds the whole index.</text>
+</svg>
+
+<div class="verdict">
+<div class="label">The sentence that shows you understand the difference</div>
+"Replication scales QPS but not corpus size — every replica still needs the entire index in RAM. Sharding scales both. That is the structural reason pgvector has a volume ceiling and Milvus doesn't, and it's why the fix for 'we outgrew pgvector' is never 'add a replica'."
+</div>
+
+<h2>6. Wall #5 — Connections and Concurrency</h2>
+
+<div class="wall">
+<span class="n">5</span><h3>Postgres is process-per-connection, and a slow query holds its process.</h3>
+</div>
+
+<p>Little's Law: <code>concurrent_connections = QPS × latency</code>.</p>
+
+<ul>
+  <li>Healthy: 500 QPS × 2 ms = <strong>1 concurrent connection.</strong> Trivial.</li>
+  <li>Post-cliff: 500 QPS × 80 ms = <strong>40 concurrent connections</strong> — and each Postgres backend is a real OS process with its own <code>work_mem</code>.</li>
+</ul>
+
+<p>The cliff therefore <em>compounds</em>: falling off it multiplies your connection count 40×, which exhausts the pool, which queues application threads, which turns a latency problem into an availability incident. Put PgBouncer in transaction mode in front of this <em>before</em> you need it.</p>
+
+<h2>7. The Mitigation Ladder — Try These Before Migrating</h2>
+
+<p>Because the index is dominated by the vector copy, almost every effective lever shrinks the vector. Ordered by effort-to-payoff:</p>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Lever</th><th>RAM multiplier</th><th>Recall cost</th><th>Effort</th></tr>
+  <tr><td>1</td><td><code>halfvec</code> (fp16) — pgvector 0.7+</td><td><strong>2.0×</strong></td><td>Negligible (&lt;0.5%)</td><td>Column type change + reindex</td></tr>
+  <tr><td>2</td><td>MRL truncation 1536 → 512 (Week 1 Day 3)</td><td><strong>3.0×</strong></td><td>~1–3% nDCG</td><td>Re-embed + reindex</td></tr>
+  <tr><td>3</td><td>halfvec + MRL 512 combined</td><td><strong>4.9×</strong></td><td>~1–3% nDCG</td><td>Both of the above</td></tr>
+  <tr><td>4</td><td>Binary quantization + exact rerank of top-N</td><td><strong>~13.6×</strong> (index)</td><td>Recoverable via rerank</td><td>Two-stage query rewrite</td></tr>
+  <tr><td>5</td><td>Partition by category/tenant → smaller graphs</td><td>N/A (per-query working set)</td><td>None</td><td>Schema change + routing</td></tr>
+  <tr><td>6</td><td>Dedicated read replica for search traffic</td><td>Isolates OLTP</td><td>None</td><td>Infra + routing</td></tr>
+  <tr><td>7</td><td><code>pgvectorscale</code> StreamingDiskANN</td><td>Index designed for SSD</td><td>Tunable</td><td>New extension</td></tr>
+  <tr><td>8</td><td>Citus / migrate to Milvus</td><td>Sharding</td><td>None</td><td>Major project</td></tr>
+</table>
+
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.4rem 0;">
+  <rect x="0" y="0" width="700" height="250" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">CLIMBING THE LADDER — INDEX BYTES PER ROW AT 1536 DIMS, m=16</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="62" fill="#333" font-weight="600">baseline float32</text>
+    <rect x="176" y="50" height="17" rx="3" fill="#8aa8bd" width="0">
+      <animate attributeName="width" from="0" to="470" dur="1s" fill="freeze" begin="0.2s"/></rect>
+    <text x="656" y="63" fill="#555" font-weight="700" text-anchor="end" opacity="0">6,424 B
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.2s"/></text>
+
+    <text x="24" y="104" fill="#333" font-weight="600">+ halfvec (fp16)</text>
+    <rect x="176" y="92" height="17" rx="3" fill="#2e6b3e" width="0">
+      <animate attributeName="width" from="0" to="245" dur="1s" fill="freeze" begin="1.3s"/></rect>
+    <text x="431" y="105" fill="#2e6b3e" font-weight="700" opacity="0">3,352 B &#160;&#160;1.9×
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.3s"/></text>
+
+    <text x="24" y="146" fill="#333" font-weight="600">+ MRL → 512d</text>
+    <rect x="176" y="134" height="17" rx="3" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="168" dur="1s" fill="freeze" begin="2.4s"/></rect>
+    <text x="354" y="147" fill="#1f5f8b" font-weight="700" opacity="0">2,328 B &#160;&#160;2.8×
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="3.4s"/></text>
+
+    <text x="24" y="188" fill="#333" font-weight="600">both combined</text>
+    <rect x="176" y="176" height="17" rx="3" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="95" dur="1s" fill="freeze" begin="3.5s"/></rect>
+    <text x="281" y="189" fill="#a8451f" font-weight="700" opacity="0">1,304 B &#160;&#160;4.9× &#8592; not 6×
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="4.5s"/></text>
+
+    <text x="24" y="230" fill="#333" font-weight="600">binary + rerank</text>
+    <rect x="176" y="218" height="17" rx="3" fill="#7d4fa8" width="0">
+      <animate attributeName="width" from="0" to="35" dur="1s" fill="freeze" begin="4.6s"/></rect>
+    <text x="221" y="231" fill="#7d4fa8" font-weight="700" opacity="0">472 B &#160;&#160;13.6×
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="5.6s"/></text>
+  </g>
+
+  <line x1="176" y1="44" x2="176" y2="240" stroke="#c9c3b8" stroke-width="1"/>
+  <text x="182" y="42" font-family="-apple-system,sans-serif" font-size="9" fill="#999">the 280 B floor (2m links + header) never shrinks — that is why 2×3 ≠ 6×</text>
+</svg>
+
+<p class="fig-cap" style="font-size:0.86rem;color:#777;text-align:center;margin-top:-0.8rem;margin-bottom:1.4rem;font-style:italic;">Reload to replay. Bar widths are proportional to bytes per row.</p>
+
+<p>Levers 1–3 are the ones to reach for first, and together they move the RAM cliff out by <strong>~4.9×</strong>. That is the difference between "we outgrow this in 8 months" and "we outgrow this in four years" — usually longer than the architecture's planning horizon.</p>
+
+<div class="caution">
+<div class="label">Why 4.9× and not 6×</div>
+The tempting arithmetic is 2× (fp16) × 3× (1536→512 dims) = 6×. That overstates it, because <em>only the vector shrinks</em> — the neighbour list (2m × 8 B = 256 B) and element header are fixed costs that survive every quantization. Per row: baseline 6,424 B → halfvec+MRL 1,304 B, a real 4.9×. The same effect makes lever 4's headline "32× on the vector" land at ~13.6× on the index. Run <code>mitigation_ladder.py</code> rather than multiplying in your head; this is exactly the kind of number an interviewer will ask you to derive.
+</div>
+
+<details>
+<summary>Why binary quantization needs a second stage, and how to write it</summary>
+<div class="details-body">
+<p>Binary quantization reduces each dimension to one bit (sign). 1536 dims → 192 bytes instead of 6,144 — a 32× reduction. Distance becomes Hamming distance, which is a popcount instruction: extremely fast.</p>
+<p>But one bit per dimension destroys enough information that top-10 results are no longer trustworthy on their own. The pattern is <strong>over-fetch then rescore</strong>: retrieve top-200 by binary distance from the small index, then compute exact cosine on those 200 full-precision vectors from the heap and re-sort.</p>
+<div class="code-inline">-- Stage 1: cheap ANN over the binary index. Stage 2: exact rescore of 200 rows.
+WITH candidates AS (
+    SELECT id, embedding
+    FROM products
+    ORDER BY binary_quantize(embedding)::bit(1536) &lt;~&gt; binary_quantize($1)
+    LIMIT 200
+)
+SELECT id, embedding &lt;=&gt; $1 AS distance
+FROM candidates
+ORDER BY distance
+LIMIT 10;</div>
+<p>You keep the full-precision vectors in the heap (cheap, sequential access for 200 rows) and only the binary index needs to be RAM-resident. This is the single highest-leverage trick for staying on Postgres at scale.</p>
+</div>
+</details>
+
+<h2>8. Building the Index Outside Postgres</h2>
+
+<p>Wall #3 said an HNSW rebuild takes ~42 minutes at 4M vectors, needs 2× index space on disk, and competes with live queries for CPU. The natural question follows: <strong>can you build the index somewhere else — in C++, offline — and just hand the result to Postgres?</strong></p>
+
+<p>The answer has two halves, and they point in opposite directions.</p>
+
+<h3>Half one: you cannot import a prebuilt index <em>into</em> pgvector</h3>
+
+<div class="caution">
+<div class="label">Why not</div>
+A pgvector HNSW index is a Postgres index access method, not a file. It lives in the relation's own page format, is WAL-logged, participates in MVCC visibility checks, and is tied to the table's physical tuple identifiers. Postgres exposes no "load a prebuilt index" API for any index type — builds must go through the access method's build function.
+<p style="margin-top:0.7rem;margin-bottom:0;">So there is no supported path where you run <code>hnswlib</code> in C++, serialise the graph, and copy the bytes into a Postgres index. What you <em>can</em> do inside Postgres is make the build faster (<code>maintenance_work_mem</code>, <code>max_parallel_maintenance_workers</code>) and control <em>when</em> it runs — but the CPU is spent on the database host either way.</p>
+</div>
+
+<details>
+<summary>The in-Postgres workaround: build into a shadow table, then swap</summary>
+<div class="details-body">
+<p>You cannot move the build off the machine, but you can take it off the <em>hot path</em> and make cutover instant:</p>
+<div class="code-inline">-- 1. Build the new generation beside the live one, at your chosen time.
+CREATE TABLE products_v2 (LIKE products INCLUDING ALL);
+INSERT INTO products_v2 SELECT * FROM products;          -- or re-embedded rows
+
+SET maintenance_work_mem = '16GB';
+SET max_parallel_maintenance_workers = 7;
+CREATE INDEX products_v2_emb ON products_v2
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+
+-- 2. Cut over atomically — a metadata-only operation, milliseconds.
+BEGIN;
+ALTER TABLE products   RENAME TO products_old;
+ALTER TABLE products_v2 RENAME TO products;
+COMMIT;
+
+-- 3. Keep products_old until you are confident. Rollback is another rename.</div>
+<p>This gives you a versioned, rollback-able index generation without leaving Postgres. It costs 2× storage during the transition and still burns build CPU on the primary — run it on a schedule you control, ideally on an instance that is not also serving checkout.</p>
+</div>
+</details>
+
+<h3>Half two: you can move the index out entirely — and this is a real architecture</h3>
+
+<p>The pattern is to stop treating the index as part of the database and start treating it as a <strong>derived build artifact</strong>: Postgres remains the source of truth for vectors; the ANN index is a versioned file produced by a batch job and served by something else.</p>
+
+<p>This will feel familiar. It is the same shape as a nightly aggregate table, a search index build, or an offline-to-online feature store materialisation — work you have done for years.</p>
+
+<table class="matrix-table">
+  <tr><th>C/C++ library</th><th>Serialisable artifact</th><th>Why you'd pick it</th></tr>
+  <tr><td><strong>FAISS</strong> (Meta)</td><td><code>write_index</code> / <code>read_index</code></td><td>The default. IVF, PQ, HNSW, and GPU index types. Build a billion-vector index on a GPU box in minutes.</td></tr>
+  <tr><td><strong>hnswlib</strong></td><td><code>saveIndex</code> / <code>loadIndex</code></td><td>Header-only C++ from the HNSW authors. Small, fast, easy to embed.</td></tr>
+  <tr><td><strong>usearch</strong></td><td>mmap-able file</td><td>Single-header C++, memory-mapped so load is instant and processes share one copy. Used inside ClickHouse.</td></tr>
+  <tr><td><strong>DiskANN / Vamana</strong> (Microsoft)</td><td>On-SSD index</td><td>Designed so the index does <em>not</em> have to fit RAM — directly attacks Wall #1.</td></tr>
+  <tr><td><strong>ScaNN</strong> (Google)</td><td>Serialised artifact</td><td>Best-in-class recall/latency on many benchmarks. Also what AlloyDB uses.</td></tr>
+  <tr><td><strong>Annoy</strong> (Spotify)</td><td>mmap'd, immutable</td><td>Built expressly for this pattern: construct offline, memory-map read-only at serve time.</td></tr>
+</table>
+
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="250" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">INDEX AS A BUILD ARTIFACT — THE OFFLINE PIPELINE</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="9.5">
+    <rect x="20" y="58" width="104" height="44" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="72" y="76" text-anchor="middle" fill="#1a1a1a" font-weight="700">Postgres</text>
+    <text x="72" y="90" text-anchor="middle" fill="#2e6b3e">source of truth</text>
+
+    <rect x="156" y="58" width="104" height="44" rx="6" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="208" y="76" text-anchor="middle" fill="#1a1a1a" font-weight="700">Batch build</text>
+    <text x="208" y="90" text-anchor="middle" fill="#1f5f8b">FAISS / GPU box</text>
+
+    <rect x="292" y="58" width="104" height="44" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+    <text x="344" y="76" text-anchor="middle" fill="#1a1a1a" font-weight="700">Artifact</text>
+    <text x="344" y="90" text-anchor="middle" fill="#a8451f">S3, versioned</text>
+
+    <rect x="428" y="58" width="104" height="44" rx="6" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="480" y="76" text-anchor="middle" fill="#1a1a1a" font-weight="700">Serving pods</text>
+    <text x="480" y="90" text-anchor="middle" fill="#1f5f8b">mmap, stateless</text>
+
+    <rect x="564" y="58" width="112" height="44" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="620" y="76" text-anchor="middle" fill="#1a1a1a" font-weight="700">IDs &#8594; Postgres</text>
+    <text x="620" y="90" text-anchor="middle" fill="#2e6b3e">hydrate + filter</text>
+  </g>
+
+  <g stroke="#8a8578" stroke-width="1.5" marker-end="url(#exarrow)">
+    <line x1="124" y1="80" x2="152" y2="80"/><line x1="260" y1="80" x2="288" y2="80"/>
+    <line x1="396" y1="80" x2="424" y2="80"/><line x1="532" y1="80" x2="560" y2="80"/>
+  </g>
+  <circle r="5" fill="#fab387"><animateMotion dur="4.5s" repeatCount="indefinite" path="M 72 112 L 620 112"/></circle>
+
+  <!-- freshness gap -->
+  <rect x="156" y="140" width="376" height="46" rx="8" fill="#fdf0ea" stroke="#a8451f" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="168" y="159" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a8451f" font-weight="700">Everything between these two boxes is a freshness gap.</text>
+  <text x="168" y="176" font-family="-apple-system,sans-serif" font-size="10" fill="#333">Rebuild nightly and your index is up to 24 h stale. This is the dual-write problem again.</text>
+
+  <text x="20" y="212" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333"><tspan font-weight="700">The saving grace:</tspan> the index is <tspan font-style="italic">derived</tspan>, not authoritative. Losing it costs a rebuild, never data.</text>
+  <text x="20" y="230" font-family="-apple-system,sans-serif" font-size="10.5" fill="#666">That is a materially weaker failure mode than an external store that owns state you cannot regenerate.</text>
+
+  <defs><marker id="exarrow" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L0,5 L6,2.5 z" fill="#8a8578"/></marker></defs>
+</svg>
+
+<h3>Solving freshness: base + delta + tombstones</h3>
+
+<p>An immutable nightly artifact cannot see today's changes. The standard fix is a pattern you already know from LSM-trees and Lucene segments:</p>
+
+<ul>
+  <li><strong>Base index</strong> — large, immutable, rebuilt on a schedule. Holds ~99% of vectors.</li>
+  <li><strong>Delta index</strong> — small, in-memory, built from rows changed since the base was cut. Cheap to rebuild continuously.</li>
+  <li><strong>Tombstone set</strong> — IDs deleted or updated since the base. Results matching it are dropped.</li>
+  <li><strong>Query</strong> = search base + search delta → merge → filter tombstones → top-k.</li>
+</ul>
+
+<div class="verdict">
+<div class="label">Why this is your kind of problem</div>
+Base + delta + tombstone with periodic compaction <em>is</em> an LSM-tree. You have reasoned about write amplification, compaction cadence and read amplification before — this is the same tradeoff with vectors in the leaves. Most GenAI engineers arrive at this pattern by trial and error; you can name it, and name the failure mode (delta grows until querying it costs more than the base did, so compaction cadence is set by delta size, not by the clock).
+</div>
+
+<h3>What you gain, and what you have just signed up for</h3>
+
+<div class="proscons" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.3rem 0;">
+  <div style="background:#f0f6f1;border:1px solid #cfe3d4;border-radius:9px;padding:1rem 1.2rem;">
+    <h4 style="margin:0 0 0.5rem 0;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.04em;color:#2e6b3e;">Gains</h4>
+    <ul style="margin:0 0 0 1.1rem;">
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">Build CPU leaves the database entirely — Wall #3 disappears</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">Build on a GPU box: hours become minutes</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">Index types pgvector lacks — PQ, ScaNN, GPU, DiskANN</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">Serving nodes are stateless — scale reads by pulling the artifact</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;"><strong>Immutable, versioned, reproducible</strong> — you can re-run a query against the exact index that served it</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">mmap means the OS page cache handles residency, shared across processes</li>
+    </ul>
+  </div>
+  <div style="background:#fdf4ef;border:1px solid #f0dbcc;border-radius:9px;padding:1rem 1.2rem;">
+    <h4 style="margin:0 0 0.5rem 0;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.04em;color:#a8451f;">Costs</h4>
+    <ul style="margin:0 0 0 1.1rem;">
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;"><strong>You have re-created the dual-write problem</strong> — Day 2's entire argument now applies to you</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">No SQL <code>WHERE</code> in the index — filtering moves to your code, and Day 1's pre-filter dilemma returns worse</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">No MVCC — the index has no concept of transaction visibility</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">Deletes need a tombstone set maintained separately</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">You now own a service: deploys, health checks, memory, on-call</li>
+      <li style="margin-bottom:0.35rem;font-size:0.94rem;">Two round trips — index for IDs, Postgres to hydrate</li>
+    </ul>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The honest summary</div>
+Moving the index out is <strong>not</strong> a way to dodge Day 2's dual-write problem — it is a way to <em>accept</em> it in exchange for build isolation and index freedom. The difference from adopting Pinecone or Milvus is real but narrow: the artifact is <em>derived and disposable</em>, so a failure costs a rebuild rather than data loss, and Postgres stays the single authoritative copy. That is a genuinely weaker failure mode. It is not the same as "no sync pipeline."
+</div>
+
+<h3>The middle ground worth knowing</h3>
+
+<table class="matrix-table">
+  <tr><th>Approach</th><th>Where the build runs</th><th>Where the query runs</th></tr>
+  <tr><td>Plain pgvector</td><td>In Postgres</td><td>In Postgres</td></tr>
+  <tr><td>Shadow table + rename swap</td><td>In Postgres, on your schedule</td><td>In Postgres</td></tr>
+  <tr><td><code>pgvectorscale</code></td><td>In Postgres (Rust, StreamingDiskANN)</td><td>In Postgres — index designed for SSD, so Wall #1 softens</td></tr>
+  <tr><td><strong>Lantern</strong></td><td>Externally via its CLI, then imported</td><td>In Postgres — closest thing to "build outside, serve inside"</td></tr>
+  <tr><td>External artifact (FAISS/usearch)</td><td>Batch job / GPU box</td><td>Your own service; Postgres hydrates</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The recommendation, and when it flips</div>
+For the retail case at 4M vectors, this is over-engineering: a 42-minute rebuild on a schedule you control, or a shadow-table swap, solves Wall #3 without a new service. <span class="dtag ins">insurance</span> At 200k chunks it is emphatically not worth it — except that the <em>immutability</em> is attractive for audit, so a versioned artifact can be justified on reproducibility grounds even when performance doesn't need it. <span class="dtag fin">fintech</span> At 2B transaction vectors it stops being optional: no in-Postgres lever reaches, the corpus is naturally batch-oriented, and PQ/GPU index types are the only affordable way to build at all.
+</div>
+
+<h2>9. The Cost Argument — Quantization Is the Real Lever</h2>
+
+<p>Everything so far has treated memory as a capacity problem. For a cost-sensitive employer it is a <em>budget</em> problem, and that reframing changes which lever you reach for. Start from the observation that has run through this whole lesson:</p>
+
+<div class="math-box">
+At 1536 dims the vector is 6,144 bytes and the HNSW graph is ~136.<br>
+The graph is <strong>2%</strong> of your memory bill. Compressing the vector is the only lever that matters.
+</div>
+
+<p>Section 7's ladder stopped at binary quantization because that is what pgvector offers. Outside Postgres the ladder goes considerably further.</p>
+
+<h3>The encodings, and what each costs in recall</h3>
+
+<table class="matrix-table">
+  <tr><th>Encoding</th><th>Bytes/vector</th><th>vs float32</th><th>Recall</th><th>+ rerank</th><th>What it is</th></tr>
+  <tr><td>float32 flat + HNSW</td><td>6,280</td><td>1×</td><td>0.98</td><td>—</td><td>What pgvector stores. Baseline quality, worst memory.</td></tr>
+  <tr><td><code>float16</code> + HNSW</td><td>3,208</td><td>2×</td><td>0.98</td><td>—</td><td>halfvec. Essentially free.</td></tr>
+  <tr><td><strong><code>int8</code> SQ + HNSW</strong></td><td>1,672</td><td><strong>4×</strong></td><td><strong>0.97</strong></td><td>—</td><td><strong>Scalar quantization</strong> — per-dimension min/max scaled to a byte. Best quality-per-byte here, and badly underused.</td></tr>
+  <tr><td>PQ-96 (IVF)</td><td>104</td><td>60×</td><td>0.82</td><td>0.96</td><td>Product quantization, 96 subquantizers.</td></tr>
+  <tr><td><strong>PQ-64 (IVF)</strong></td><td>72</td><td><strong>87×</strong></td><td>0.75</td><td><strong>0.94</strong></td><td>Aggressive PQ. The headline number.</td></tr>
+  <tr><td>binary + rerank</td><td>328</td><td>19×</td><td>0.70</td><td>0.95</td><td>1 bit/dim, Hamming via popcount.</td></tr>
+</table>
+
+<details>
+<summary>How product quantization actually works — enough to explain it on a whiteboard</summary>
+<div class="details-body">
+<p>Split each 1536-dim vector into <em>m</em> contiguous subvectors. With m=64, each subvector is 24 dims. For each of the 64 positions, run k-means over the whole corpus to learn <strong>256 centroids</strong> for that slice. Now any vector is encoded as 64 centroid IDs — and a centroid ID in 0–255 is exactly one byte.</p>
+<div class="code-inline">1536 float32          = 6,144 bytes
+  ↓  split into 64 subvectors of 24 dims
+  ↓  replace each with the id of its nearest centroid (256 per slice = 1 byte)
+64 bytes                                    ~96x smaller</div>
+<p>Distance is then approximated by summing precomputed distances to the centroids — a table lookup per slice rather than arithmetic over 1536 floats, so it is also <em>faster</em>, not just smaller.</p>
+<p><strong>What you lose:</strong> every vector is now approximated by the nearest point in a coarse codebook. Two genuinely different vectors can encode identically. That is why raw PQ recall sits around 0.75 and why the rerank stage is not optional.</p>
+<p><strong>OPQ</strong> (optimised PQ) applies a learned rotation before splitting, so the subvectors carry more balanced information. Same size, a few points better recall — take it if your library offers it.</p>
+</div>
+</details>
+
+<div class="caution">
+<div class="label">The part that is usually left out of the pitch</div>
+"PQ gives you 96× compression" is true and incomplete. At 0.75 recall, PQ alone is unusable for most retrieval. You recover quality with <strong>rerank</strong>: retrieve top-200 using the compressed index, then rescore those 200 against <em>full-precision</em> vectors and re-sort.
+<p style="margin-top:0.7rem;margin-bottom:0;">Which means <strong>you still have to store the full vectors somewhere.</strong> The compression is on what must be in <em>RAM</em>, not on what must exist. Anyone who quotes the 96× without mentioning the rerank corpus has not built this.</p>
+</div>
+
+<h3>Where to keep the full vectors — and the variant to argue for</h3>
+
+<p>You will see the architecture drawn as "Postgres holds metadata only, the ANN engine holds vectors." That works, but there is a better arrangement:</p>
+
+<div class="verdict">
+<div class="label">Keep the vector column. Drop the pgvector index.</div>
+A <code>vector</code> column with <strong>no index on it</strong> costs disk, not RAM — 24.7 GB of heap at 4M×1536, and heap pages are only read when you actually fetch a row. Postgres then gives you, for free:
+<ul style="margin-top:0.5rem;margin-bottom:0;">
+  <li><strong>The durable source of truth</strong> for rebuilding the external index — no separate vector store to own and back up.</li>
+  <li><strong>Transactional writes</strong>, so the vector and its row still commit together (Day 2's argument survives on the write path).</li>
+  <li><strong>The rerank corpus</strong> — fetch 200 full-precision vectors by ID, which is a b-tree point lookup.</li>
+</ul>
+<p style="margin-top:0.7rem;margin-bottom:0;">"Metadata only" throws all three away and forces you to store vectors somewhere else durably anyway. Keeping the column and dropping only the <em>index</em> is strictly better, and it is the version to propose.</p>
+</div>
+
+<h3>What it costs, by scale</h3>
+
+<svg viewBox="0 0 700 245" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.4rem 0;">
+  <rect x="0" y="0" width="700" height="245" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">ALL-IN MONTHLY COST AT 100M VECTORS (infra + engineering)</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="66" fill="#333" font-weight="700">pgvector float32</text>
+    <rect x="200" y="54" height="18" rx="3" fill="#c5221f" width="0">
+      <animate attributeName="width" from="0" to="452" dur="1.2s" fill="freeze" begin="0.2s"/></rect>
+    <text x="662" y="68" fill="#c5221f" font-weight="700" text-anchor="end" opacity="0">$29,016
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.4s"/></text>
+
+    <text x="24" y="106" fill="#333" font-weight="700">pgvector halfvec</text>
+    <rect x="200" y="94" height="18" rx="3" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="241" dur="1.2s" fill="freeze" begin="0.5s"/></rect>
+    <text x="449" y="108" fill="#a8451f" font-weight="700" opacity="0">$15,499
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.7s"/></text>
+
+    <text x="24" y="146" fill="#333" font-weight="700">external int8 SQ</text>
+    <rect x="200" y="134" height="18" rx="3" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="78" dur="1.2s" fill="freeze" begin="0.8s"/></rect>
+    <text x="286" y="148" fill="#1f5f8b" font-weight="700" opacity="0">$5,024 &#160;&#160;recall 0.97
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.0s"/></text>
+
+    <text x="24" y="186" fill="#333" font-weight="700">external PQ-64</text>
+    <rect x="200" y="174" height="18" rx="3" fill="#2e6b3e" width="0">
+      <animate attributeName="width" from="0" to="60" dur="1.2s" fill="freeze" begin="1.1s"/></rect>
+    <text x="268" y="188" fill="#2e6b3e" font-weight="700" opacity="0">$3,880 &#160;&#160;recall 0.94 (reranked) &#8212; 87% cheaper
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.3s"/></text>
+  </g>
+
+  <text x="24" y="218" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Of the PQ-64 bar, <tspan font-weight="700">$3,577 is engineering</tspan> and only $303 is infrastructure. At this scale you are paying for people, not RAM.</text>
+  <text x="24" y="235" font-family="-apple-system,sans-serif" font-size="10" fill="#777">Which is exactly why the same architecture LOSES at 1M vectors — run quantization_cost_calc.py and see.</text>
+</svg>
+
+<table class="matrix-table">
+  <tr><th>Scale</th><th>pgvector float32</th><th>Best external option</th><th>Saving</th><th>Verdict</th></tr>
+  <tr><td>1M</td><td>$1,033/mo</td><td>$3,754/mo (PQ-64)</td><td class="no">−264%</td><td><strong>pgvector wins.</strong> External costs 4× more once engineering is priced.</td></tr>
+  <tr><td>10M</td><td>$3,577/mo</td><td>$3,764/mo (PQ-64)</td><td class="partial">≈ break-even</td><td>Still pgvector — halfvec at $2,225 beats both.</td></tr>
+  <tr><td>100M</td><td>$29,016/mo</td><td>$3,880/mo (PQ-64)</td><td class="yes"><strong>87%</strong></td><td>External wins decisively.</td></tr>
+  <tr><td>1B</td><td>$283,406/mo</td><td>$12,630/mo (PQ-64)</td><td class="yes"><strong>96%</strong></td><td>Not a choice — pgvector is not deployable here.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The crossover, and why leading with it is the strong move</div>
+The break-even sits <strong>between 10M and 100M vectors</strong>. Below it, external quantized ANN is <em>more</em> expensive — the operational load (~0.2 FTE ≈ $3,000/mo) swamps any infrastructure saving.
+<p style="margin-top:0.7rem;margin-bottom:0;">In a cost-focused interview, say the unflattering half first: <em>"at our scale this would cost more, so I wouldn't do it."</em> Then show you know exactly where it inverts and by how much. An engineer who proposes the clever architecture everywhere is a budget risk; one who can name the crossover is the person you hand the budget to.</p>
+</div>
+
+<h3>Which library</h3>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Choice</th><th>When it is the right call</th></tr>
+  <tr><td>1</td><td><strong>FAISS + IVF-PQ</strong></td><td>Memory is the primary constraint. Best compression available, mature, GPU builds. Start here at 100M+.</td></tr>
+  <tr><td>2</td><td><strong>FAISS + HNSW</strong></td><td>You need high recall and want the index outside Postgres, but the corpus still fits RAM uncompressed.</td></tr>
+  <tr><td>3</td><td><strong>usearch</strong></td><td>Modern C++, SIMD, mmap-able, lower footprint than hnswlib. Excellent default for a small team.</td></tr>
+  <tr><td>4</td><td><strong>hnswlib</strong></td><td>You want plain HNSW and nothing else. Header-only, trivially embeddable.</td></tr>
+  <tr><td>5</td><td><strong>DiskANN</strong></td><td>Hundreds of millions to billions where RAM is the binding constraint — index lives on SSD, only hot nodes in memory.</td></tr>
+</table>
+
+<details>
+<summary>Roll your own with mmap — when it is justified, and when it is ego</summary>
+<div class="details-body">
+<p>The minimal design is three files — <code>vectors.bin</code>, <code>graph.bin</code>, <code>id_map.bin</code> — <code>mmap()</code>'d at startup. You get near-zero load time, OS page cache handling residency, and multiple processes sharing one physical copy.</p>
+<p><strong>Justified when:</strong> you need an access pattern or a quantization scheme no library implements, or you are embedding into an existing C++ service where a dependency is unacceptable.</p>
+<p><strong>Not justified because:</strong> it looks impressive. FAISS and usearch already do this, with years of SIMD tuning and correctness fixes you would be re-deriving. In an interview, "I'd use usearch because it already mmaps and I'd rather spend the time on the rebuild pipeline" is a <em>better</em> answer than describing a custom index — it shows you know where the hard part actually is.</p>
+</div>
+</details>
+
+<div class="caution">
+<div class="label">On agent-assisted delivery — the credible version of the claim</div>
+Coding agents genuinely compress the <em>build</em>: a FAISS service, a rebuild pipeline and a sync job that might be a four-week project can plausibly be a one-week one. Run <code>quantization_cost_calc.py --build-weeks 1</code> and you will see what that is worth: at 100M vectors, <strong>$3,577/mo → $3,144/mo</strong>. A 12% improvement, not a transformation.
+<p style="margin-top:0.7rem;margin-bottom:0;">The reason is worth stating plainly, because it is the sophisticated point: <strong>agents compress build time, not operational load.</strong> The ongoing 0.2 FTE — on-call, incidents, rebuild babysitting, drift investigations — is most of the cost and does not shrink. Claiming an agent makes a service cheap to <em>own</em> will not survive contact with an experienced interviewer. Claiming it lets a small team reach an architecture that used to need a bigger one is true, defensible, and still impressive.</p>
+</div>
+
+<h2>10. The Sizing Ladder — Ask These In Order</h2>
+
+<p>Everything above is a model. This is the <em>interrogation order</em> that feeds it. When someone hands you a RAG system to design, these are the questions, in sequence — and the point of the sequence is that each answer constrains the next, so by the time you reach the bottom the architecture is already determined.</p>
+
+<svg viewBox="0 0 760 470" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE SIZING LADDER</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Each answer narrows the next. Notice what is missing from the top of the list.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="11">
+    <!-- rows: y = 62 + i*44 -->
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="0.2s"/>
+      <rect x="24" y="60" width="336" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+      <circle cx="44" cy="77" r="10" fill="#1f5f8b"/><text x="44" y="81" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">1</text>
+      <text x="62" y="81" fill="#222" font-weight="600">How many documents?</text>
+      <text x="378" y="76" fill="#555" font-size="10.5">Corpus scale — but not yet the number that matters</text>
+      <text x="378" y="89" fill="#8a8578" font-size="10">it is only an input to Q2</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="0.55s"/>
+      <rect x="24" y="104" width="336" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+      <circle cx="44" cy="121" r="10" fill="#1f5f8b"/><text x="44" y="125" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">2</text>
+      <text x="62" y="125" fill="#222" font-weight="600">&#215; chunks per document = <tspan fill="#8c2a00">N</tspan></text>
+      <text x="378" y="120" fill="#555" font-size="10.5">The real corpus size. <tspan font-weight="700">This is a decision, not a fact.</tspan></text>
+      <text x="378" y="133" fill="#8a8578" font-size="10">chunk size 800&#8594;400 tokens doubles your infrastructure</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="0.9s"/>
+      <rect x="24" y="148" width="336" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+      <circle cx="44" cy="165" r="10" fill="#1f5f8b"/><text x="44" y="169" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">3</text>
+      <text x="62" y="169" fill="#222" font-weight="600">Embedding dimension?</text>
+      <text x="378" y="164" fill="#555" font-size="10.5">Bytes per vector. <tspan font-weight="700">Also a decision.</tspan></text>
+      <text x="378" y="177" fill="#8a8578" font-size="10">MRL truncation 1536&#8594;768 is yours to make, not the ML team&#8217;s</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="1.25s"/>
+      <rect x="24" y="192" width="336" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+      <circle cx="44" cy="209" r="10" fill="#1f5f8b"/><text x="44" y="213" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">4</text>
+      <text x="62" y="213" fill="#222" font-weight="600">Inserts vs <tspan fill="#8c2a00">updates</tspan> per day?</text>
+      <text x="378" y="208" fill="#555" font-size="10.5">Build strategy, bloat, rebuild cadence</text>
+      <text x="378" y="221" fill="#8a8578" font-size="10">split them &#8212; updates decay the graph, inserts do not</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="1.6s"/>
+      <rect x="24" y="236" width="336" height="34" rx="5" fill="#fff" stroke="#c8602a" stroke-width="1.5"/>
+      <circle cx="44" cy="253" r="10" fill="#c8602a"/><text x="44" y="257" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">5</text>
+      <text x="62" y="257" fill="#222" font-weight="600">How selective are the filters?</text>
+      <text x="378" y="252" fill="#555" font-size="10.5">Whether you need an ANN index <tspan font-weight="700">at all</tspan></text>
+      <text x="378" y="265" fill="#8a8578" font-size="10">the most-skipped question, and the one that can delete the problem</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="1.95s"/>
+      <rect x="24" y="280" width="336" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+      <circle cx="44" cy="297" r="10" fill="#1f5f8b"/><text x="44" y="301" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">6</text>
+      <text x="62" y="301" fill="#222" font-weight="600">Expected QPS (peak, not mean)?</text>
+      <text x="378" y="296" fill="#555" font-size="10.5">Cores, replicas, connection budget</text>
+      <text x="378" y="309" fill="#8a8578" font-size="10">peak sizes the box; mean sizes the bill</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="2.3s"/>
+      <rect x="24" y="324" width="336" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+      <circle cx="44" cy="341" r="10" fill="#1f5f8b"/><text x="44" y="345" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">7</text>
+      <text x="62" y="345" fill="#222" font-weight="600">Latency SLA at P99?</text>
+      <text x="378" y="340" fill="#555" font-size="10.5">Whether the index must be RAM-resident</text>
+      <text x="378" y="353" fill="#8a8578" font-size="10">a 2 s SLA and a 50 ms SLA are different architectures</text>
+    </g>
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.35s" fill="freeze" begin="2.65s"/>
+      <rect x="24" y="368" width="336" height="34" rx="5" fill="#fff" stroke="#c8602a" stroke-width="1.5"/>
+      <circle cx="44" cy="385" r="10" fill="#c8602a"/><text x="44" y="389" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">8</text>
+      <text x="62" y="389" fill="#222" font-weight="600">What does a <tspan fill="#8c2a00">wrong answer</tspan> cost?</text>
+      <text x="378" y="384" fill="#555" font-size="10.5">Recall SLO &#8594; encoding &#8594; most of the bill</text>
+      <text x="378" y="397" fill="#8a8578" font-size="10">&#167;9 showed encoding is the biggest cost lever; this question sets it</text>
+    </g>
+
+    <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.4s" fill="freeze" begin="3.1s"/>
+      <rect x="24" y="414" width="336" height="30" rx="5" fill="#2e6b3e"/>
+      <text x="192" y="434" fill="#fff" font-size="11.5" font-weight="700" text-anchor="middle">&#8595; ARCHITECTURE</text>
+      <text x="378" y="426" fill="#2e6b3e" font-size="10.5" font-weight="700">&#8220;Which vector database?&#8221; is an OUTPUT here.</text>
+      <text x="378" y="439" fill="#8a8578" font-size="10">If it was your first question, you were guessing.</text>
+    </g>
+  </g>
+</svg>
+
+<div class="verdict">
+<div class="label">The signal this sends</div>
+Notice that <strong>"which vector database should I use?" never appears on the ladder</strong> — it falls out of the bottom. That ordering is the whole tell. An engineer who opens with "we should use Pinecone" has picked a technology and will now reverse-engineer requirements to justify it. An engineer who opens with "how many chunks, and what does a miss cost?" is going to arrive somewhere defensible even if they have never used the tool they end up choosing.
+</div>
+
+<h3>Two of these are decisions you control, not facts you are handed</h3>
+
+<p>The version of this list that circulates treats every input as a given. Two of them are not, and they happen to be the two with the largest cost multiplier:</p>
+
+<table class="matrix-table">
+  <tr><th>Question</th><th>Usually treated as</th><th>Actually</th><th>Leverage</th></tr>
+  <tr>
+    <td><strong>Q2 — chunks per document</strong></td>
+    <td>"The ingestion pipeline emits what it emits."</td>
+    <td>A retrieval-quality decision with a linear infrastructure cost. Halving chunk size doubles N, doubles index RAM, doubles the bill.</td>
+    <td class="yes"><strong>2–4×</strong></td>
+  </tr>
+  <tr>
+    <td><strong>Q3 — embedding dimension</strong></td>
+    <td>"The model outputs 1536, so we store 1536."</td>
+    <td>MRL-trained models (<code>text-embedding-3-*</code>) let you truncate. 1536 → 768 is a config change, and §7 measured the recall cost as small.</td>
+    <td class="yes"><strong>2×</strong></td>
+  </tr>
+</table>
+
+<p>Combined, that is a <strong>4–8× swing in infrastructure cost decided before a single row is indexed</strong> — larger than anything you can recover later by tuning <code>ef_search</code>. If you only get to influence two things on this list, these are the two.</p>
+
+<h3>The question everyone skips — Q5, filter selectivity</h3>
+
+<p>This one deserves its own paragraph because it can <em>delete the problem</em>. ANN indexes exist because scanning millions of vectors is too slow. But if every query is already scoped — <em>this customer's transactions</em>, <em>this policy form in this state</em>, <em>this category and brand</em> — then the candidate set after filtering may be small enough that <strong>exact search is not just viable, it is better</strong>: no recall loss, no index to rebuild, no graph decay, perfect reproducibility for audit.</p>
+
+<div class="math-box">effective corpus = N × filter selectivity<br>if that fits your latency budget, you do not need an ANN index</div>
+
+<p>The trap is that latency and throughput fail separately. A filtered exact scan can comfortably meet a P99 SLA and still be unaffordable, because each query burns whole core-seconds and you are serving hundreds per second. Check both — the companion script does.</p>
+
+<h3>The ladder run three times</h3>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail &#8212; 800k SKUs</div>
+    <p><span class="kv">Q1&#183;Q2 &#8594; 4M chunks<br>Q3 &#8594; 1536<br>Q4 &#8594; 3%/day, mostly updates<br>Q5 &#8594; ~2% (category+brand)<br>Q6 &#8594; 500 peak QPS<br>Q7 &#8594; 150 ms<br>Q8 &#8594; low (user rephrases)</span></p>
+    <p><strong>Filtered exact passes latency and fails throughput</strong> &#8212; ~41 cores at peak.</p>
+    <p><strong>&#8594; pgvector + HNSW on a dedicated read replica.</strong> halfvec optional. Low miss cost permits aggressive quantization later.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance &#8212; 12k filed forms</div>
+    <p><span class="kv">Q1&#183;Q2 &#8594; 200k chunks<br>Q3 &#8594; 1536<br>Q4 &#8594; ~0.1%/day, append-only<br>Q5 &#8594; form+state+effective date<br>Q6 &#8594; 20 QPS<br>Q7 &#8594; 2 s (a human reads it)<br>Q8 &#8594; <strong>high</strong> &#8212; compliance event</span></p>
+    <p>1.2 GB scanned exactly is ~200 ms on one core, ~50 ms across four. At 20 QPS that is a few cores.</p>
+    <p><strong>&#8594; No ANN index at all.</strong> Exact search: recall 1.0, nothing to rebuild, nothing to decay, and audit reproducibility for free.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech &#8212; 2B transactions</div>
+    <p><span class="kv">Q1&#183;Q2 &#8594; 2B vectors<br>Q3 &#8594; 768<br>Q4 &#8594; 2%/day, append-only<br>Q5 &#8594; <strong>~500 rows</strong> (per card)<br>Q6 &#8594; 4,000 QPS<br>Q7 &#8594; 50 ms (inline scoring)<br>Q8 &#8594; high, asymmetric</span></p>
+    <p>Filtering by card leaves ~1.5 MB &#8212; <strong>0.25 ms of CPU</strong>, 0.06 ms P99 across four workers. At 4,000 QPS that is <strong>1.02 cores</strong>.</p>
+    <p><strong>&#8594; Partition by business key, exact search inside the partition.</strong> The 2B-vector ANN problem was an illusion created by skipping Q5.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">Read the insurance and fintech columns again</div>
+Two of the three domains end with <strong>"no ANN index"</strong> — and one of them is the 2-billion-vector case that looked like the hardest problem on the page. That is not a trick; it is what Q5 is for. The whole of §1–§9 exists to handle the retail column, where the filter genuinely does not save you.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is also the answer to give when an interviewer describes a huge corpus and waits to see if you reach for a distributed vector database. <em>"Before I size an index — what does a single query actually have to search? If every query is scoped to one card or one policy form, the corpus size is not the working set, and I'd want to rule out partition-plus-exact before building anything."</em></p>
+</div>
+
+<h3>The interview answer</h3>
+
+<div class="verdict">
+<div class="label">Good &#8212; demonstrates workload-driven reasoning</div>
+"I wouldn't choose pgvector or a dedicated vector database upfront. I'd estimate the expected number of chunks, embedding size, query volume, and growth rate. For up to a few million chunks that comfortably fit in memory, pgvector is attractive because it keeps metadata and vectors together and simplifies operations. As the dataset grows into tens or hundreds of millions of chunks, I'd separate metadata from vector search, introduce a dedicated ANN engine, and eventually shard and compress the vector indexes."
+</div>
+
+<p>That is a solid answer and it will pass. The version below adds the two things a senior interviewer probes for next: <strong>a number attached to every claim</strong>, and <strong>the case where the answer is "no index."</strong></p>
+
+<div class="verdict">
+<div class="label">Stronger &#8212; same reasoning, with the numbers and the escape hatch</div>
+"I'd size it before naming a product. Documents times chunks-per-document gives me N; N times dimension times 4 bytes gives me the heap; and pgvector's HNSW stores a full copy of each vector, so index RAM is roughly heap again — about 7 GB per million vectors at 1536 dims.
+<p style="margin-top:0.7rem;">Before any of that I'd ask what one query actually has to search. If queries are scoped by customer, policy, or category, the filtered set may be small enough for exact search — and then there is no index to build, no recall to lose, and nothing to rebuild. I'd rule that out first because it is strictly the cheapest thing that works.
+<p style="margin-top:0.7rem;">If it genuinely needs ANN: under about 10M chunks pgvector is the right call &#8212; one system, transactional writes, metadata and vectors together. From 25 to 50M it still holds once I apply fp16 and MRL truncation, which buys about 5&#215;. Past roughly 100M the in-Postgres ladder is exhausted and I'd move the index to a dedicated engine with product quantization; our own numbers put that crossover between 10M and 100M, and below it the external option is <em>more</em> expensive once you price the operational load.
+<p style="margin-top:0.7rem;margin-bottom:0;">One caveat: with search on the OLTP instance I'd expect the CPU wall before the RAM wall, so the first move is usually a dedicated read replica, not a new database."
+</div>
+
+<h2>11. The Defensible Number</h2>
+
+<p>Now you can answer "when does pgvector break?" with a model instead of a memory. At 1536-dim float32, m=16, on a well-provisioned instance:</p>
+
+<table class="matrix-table">
+  <tr><th>Corpus</th><th>Index size</th><th>RAM to stay cached</th><th>Verdict</th></tr>
+  <tr><td>1M</td><td>7 GB</td><td>~16 GB</td><td>Trivial. Any instance.</td></tr>
+  <tr><td>4M</td><td>29 GB</td><td>~64 GB</td><td><strong>Comfortable — the running example sits here.</strong></td></tr>
+  <tr><td>10M</td><td>71 GB</td><td>~128 GB</td><td>Fine. Standard instance class.</td></tr>
+  <tr><td>25M</td><td>179 GB</td><td>~256 GB</td><td>Viable. Apply halfvec (lever 1) and it's easy.</td></tr>
+  <tr><td>50M</td><td>357 GB</td><td>~512 GB</td><td>Expensive but real. Needs levers 1–3.</td></tr>
+  <tr><td>100M</td><td>714 GB</td><td>~1 TB</td><td>Ladder exhausted. <strong>Migration territory.</strong></td></tr>
+  <tr><td>500M+</td><td>3.5 TB</td><td>—</td><td>Not a pgvector problem.</td></tr>
+</table>
+
+<h3>The same model, three domains, three different walls</h3>
+
+<p>This is the payoff of building a model instead of memorising a threshold — run it for each domain and you get genuinely different architectures.</p>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — 4M × 1536</div>
+    <p><span class="kv">index 28.6 GB · needs ~51 GB</span></p>
+    <p>Fits a 64 GB instance with ~20% headroom.</p>
+    <p><strong>First wall: CPU</strong>, not RAM — at 500 QPS, search takes 1.5–2.5 cores from the same pool as checkout.</p>
+    <p><strong>Move:</strong> dedicated read replica.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance — 200k × 1536</div>
+    <p><span class="kv">index 1.4 GB · needs ~2.6 GB</span></p>
+    <p>Fits in shared_buffers on a laptop. At 20 QPS you use ~0.07 of one core.</p>
+    <p><strong>No wall is reachable.</strong> You would need 35× the corpus and 100× the traffic to make any of this matter.</p>
+    <p><strong>Move:</strong> stop optimising. Spend the effort on chunking, filter correctness, and audit.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech txns — 2B × 768</div>
+    <p><span class="kv">index 7.4 TB · needs ~13.4 TB</span></p>
+    <p>Off the chart — 26× a 512 GB instance. Even binary quantization + exact rerank, the best rung on the ladder, still needs ~1.5 TB.</p>
+    <p><strong>RAM wall by 26×, plus connection exhaustion.</strong> Replication cannot help — each replica needs the whole index.</p>
+    <p><strong>Move:</strong> sharded store. This is Milvus's actual use case.</p>
+  </div>
+</div>
+
+<div class="code-inline"># Reproduce all three with the companion script:
+python hnsw_capacity_planner.py --domain retail
+python hnsw_capacity_planner.py --domain insurance
+python hnsw_capacity_planner.py --domain fintech-txn</div>
+
+<div class="caution">
+<div class="label">The trap in the insurance column</div>
+"No wall is reachable" is the right engineering conclusion and the wrong thing to say on its own in an interview — it sounds like you didn't think about scale. Say it as a <em>bound</em>: <em>"at 200k chunks the index is 1.4 GB, so I'd have to grow 35× before RAM is even a conversation. That tells me the engineering belongs on retrieval correctness and auditability, not on the index."</em> Knowing where the constraint <strong>isn't</strong> is as much a part of the model as knowing where it is — and it is what stops a team gold-plating infrastructure that will never be stressed.
+</div>
+
+<div class="verdict">
+<div class="label">The interview answer, in full</div>
+"pgvector's volume limit isn't a fixed row count — it's whether the HNSW index fits one machine's RAM, because traversal is serially-dependent pointer chasing and falling out of cache costs 25–100× on P99. At 1536 dims that's about 7 GB per million vectors. So: under 10M is trivial, 25–50M is viable once you apply fp16 and MRL truncation for a ~5× reduction, and past ~100M you've exhausted the in-Postgres ladder and sharding is the only structural answer. In practice I'd expect to hit the <em>CPU</em> wall before the RAM wall if search shares the OLTP instance — so the first move is almost always a dedicated read replica, not a new database."
+</div>
+
+<h2>12. Companion Scripts</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it computes</th></tr>
+  <tr>
+    <td><code>week2/day3/hnsw_capacity_planner.py</code></td>
+    <td>Wall-by-wall analysis for your parameters: index size, RAM fit verdict, expected latency regime, QPS ceiling and cores consumed, connection count via Little's Law, rebuild time estimate. Tells you <em>which wall you hit first</em>.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day3/mitigation_ladder.py</code></td>
+    <td>Applies levers 1–4 cumulatively and reports where each moves the ceiling, with recall cost and the corpus size each unlocks on a fixed instance.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day3/quantization_cost_calc.py</code></td>
+    <td><strong>The cost artifact.</strong> Prices six encodings across four scale tiers, all-in (infrastructure + amortised build + ongoing ops), with the recall each achieves. Finds the cheapest architecture meeting your recall SLO and shows the crossover where external quantized ANN starts to win. <code>--build-weeks 1</code> models agent-assisted delivery; <code>--reserved</code> prices committed-use RAM.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day3/sizing_ladder.py</code></td>
+    <td><strong>The §10 ladder, executable.</strong> Takes the eight answers and returns an architecture — checking the filtered-exact path <em>first</em>, and checking latency and throughput <em>separately</em>. Then runs a sensitivity pass: it perturbs each answer in both directions and reports which question actually decided the outcome. Across all four domain presets the load-bearing answer is <strong>Q5, filter selectivity</strong> — the question most design reviews never ask.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day3/external_index_tradeoff.py</code></td>
+    <td>The §8 base + delta model. Sweeps rebuild cadence against query cost and freshness lag, and finds the cheapest cadence that holds your query-inflation budget. Shows the LSM tradeoff concretely: at 4M vectors with 3%/day churn a nightly rebuild inflates queries <strong>7.75×</strong>, while 15-minute rebuilds cost 1.07× and 0.22 of a build machine.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week2/day3
+python hnsw_capacity_planner.py --domain retail
+python hnsw_capacity_planner.py --domain insurance
+python hnsw_capacity_planner.py --domain fintech-txn
+python mitigation_ladder.py --ram-gb 64
+python sizing_ladder.py --domain retail         # filter passes latency, fails throughput
+python sizing_ladder.py --domain insurance      # verdict: no ANN index at all
+python sizing_ladder.py --domain fintech-txn    # 2B vectors, ~1 core, no index
+python external_index_tradeoff.py
+python external_index_tradeoff.py --domain fintech-txn   # no cadence works
+python quantization_cost_calc.py                         # where the money goes
+python quantization_cost_calc.py --build-weeks 1         # agent-assisted build
+python quantization_cost_calc.py --recall-slo 0.97       # quality-first budget</div>
+
+<h2>13. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Scale Limits Check</h3>
+
+<div class="quiz">
+<div class="q">1. Why does a fast NVMe drive rated at 500k IOPS fail to rescue an HNSW index that no longer fits in RAM?</div>
+<button data-correct="false">Because pgvector bypasses the OS page cache and always reads from disk.</button>
+<button data-correct="true">Because graph traversal is serially dependent — each hop's address comes from the previous hop's result, so it runs at queue depth 1. High IOPS ratings assume deep queues; what you actually pay is per-read latency, ~100 hops in series.</button>
+<button data-correct="false">Because NVMe drives cannot store float32 vectors efficiently.</button>
+<button data-correct="false">Because Postgres single-threads all index scans regardless of storage.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Day 1 estimated HNSW index overhead at 30–60% of the heap. Why is the real figure closer to 105–115% at 1536 dims?</div>
+<button data-correct="true">pgvector's HNSW index stores a full copy of every vector inside the index — traversal needs the vector at each node to compute distance. At 1536 dims that copy dwarfs the neighbour lists, which are under 4% of the index.</button>
+<button data-correct="false">Because Postgres pads every index entry to a 8 KB page boundary.</button>
+<button data-correct="false">Because the index stores every vector once per HNSW layer.</button>
+<button data-correct="false">Because WAL records for the index are counted in the index size.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Search traffic is at 500 QPS on the same instance serving checkout. Latency is fine. What is the risk you should raise?</div>
+<button data-correct="false">None — if vector latency is within SLA, the configuration is correct.</button>
+<button data-correct="true">Vector search is CPU-bound and consuming 1.5–2.5 cores continuously from the same pool as OLTP. Under a traffic spike, the workload that fails first is likely checkout, not search. Isolating search onto a dedicated read replica addresses this long before a different database does.</button>
+<button data-correct="false">The HNSW index will become corrupted under concurrent OLTP writes.</button>
+<button data-correct="false">Postgres will automatically deprioritise vector queries, so search will degrade first.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Your corpus is growing and you want the largest RAM reduction for the least recall loss. What do you reach for first?</div>
+<button data-correct="false">Reduce <code>m</code> from 16 to 8 to halve the graph size.</button>
+<button data-correct="true"><code>halfvec</code> (fp16) for a clean 2× with well under 1% recall cost, then MRL truncation to 512 dims for a further 3× — 4.9× combined once fixed graph overhead is accounted for, which typically moves the cliff out by years.</button>
+<button data-correct="false">Increase <code>shared_buffers</code> beyond the instance's physical RAM.</button>
+<button data-correct="false">Switch from HNSW to IVFFlat, which does not store vectors in the index.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Why is "add a read replica" the wrong answer to "we have too many vectors"?</div>
+<button data-correct="true">Replication scales QPS, not corpus size — each replica holds a complete copy of the index and needs it resident in its own RAM. The volume ceiling is set by one machine either way. Sharding is what raises it.</button>
+<button data-correct="false">Read replicas cannot serve queries against HNSW indexes.</button>
+<button data-correct="false">Replicas lag too far behind for search to be useful.</button>
+<button data-correct="false">Each replica stores only a shard of the index, so recall drops.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. A seasonal catalog refresh re-embeds 30% of SKUs and delists 10%. Latency creeps up over the following weeks. What is happening?</div>
+<button data-correct="false">The OpenAI embedding model changed, so distances are no longer comparable.</button>
+<button data-correct="true">Updates and deletes leave dead nodes that remain in the HNSW graph as traversal waypoints. You pay hop cost for entries that can never be returned, so recall degrades silently and latency creeps. VACUUM does not repair graph quality — this needs REINDEX CONCURRENTLY, with 2× index headroom on disk.</button>
+<button data-correct="false">Postgres autovacuum rebuilt the HNSW graph with worse parameters.</button>
+<button data-correct="false">The IVFFlat centroids became stale.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Can you build an HNSW index with C++ (hnswlib/FAISS) offline and load it into a pgvector index?</div>
+<button data-correct="false">Yes — pgvector exposes an index import function for exactly this.</button>
+<button data-correct="true">No. A pgvector index is a Postgres access method, not a file: it uses the relation's page format, is WAL-logged, participates in MVCC visibility, and is tied to physical tuple IDs. Postgres has no "load a prebuilt index" API for any index type. You can speed the build or control when it runs — but the CPU is spent on the database host.</button>
+<button data-correct="false">Only for IVFFlat, because it has no graph structure to serialise.</button>
+<button data-correct="false">Yes, provided the external build uses identical m and ef_construction values.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">8. You move to an external FAISS index built nightly as a versioned artifact. What have you actually traded?</div>
+<button data-correct="false">Nothing meaningful — Postgres is still the source of truth, so the architecture is unchanged.</button>
+<button data-correct="true">You gained build isolation, GPU builds, index types pgvector lacks, and reproducible versioned artifacts — and you re-created the dual-write problem, lost SQL <code>WHERE</code> in the index, lost MVCC, and now own a serving service. The one genuine improvement over adopting Pinecone: the artifact is <em>derived and disposable</em>, so failure costs a rebuild rather than data loss.</button>
+<button data-correct="false">You eliminated the dual-write problem, because the index is derived rather than authoritative.</button>
+<button data-correct="false">You traded recall for latency; freshness is unaffected because Postgres still holds the vectors.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">9. With base + delta + tombstones, what actually determines your rebuild cadence?</div>
+<button data-correct="true">Delta size, not the clock. The delta is scanned on every query, so it inflates latency linearly as it grows — "rebuild nightly" only works if the delta stays small enough for 24 hours at your churn rate. At 4M vectors and 3%/day churn, nightly rebuilds inflate queries ~7.75× while 15-minute rebuilds cost 1.07×.</button>
+<button data-correct="false">The build machine's throughput — you rebuild as often as the hardware allows.</button>
+<button data-correct="false">The tombstone count, since deletes must be compacted before they accumulate.</button>
+<button data-correct="false">Your recall SLO — the delta reduces recall until it is merged.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">10. An interviewer describes a fraud system with 2 billion transaction embeddings and 4,000 QPS at a 50 ms SLA, then asks how you would build the vector search. What is the first thing to establish?</div>
+<button data-correct="false">Which distributed vector database to use — 2B vectors is far past any single-node option.</button>
+<button data-correct="false">The embedding dimension, so you can compute the index size and choose a quantization scheme.</button>
+<button data-correct="true">What a single query actually has to search. Fraud scoring is scoped to one card, so the filtered candidate set is ~500 rows — about 1.5 MB, 0.25 ms of CPU, roughly one core at 4,000 QPS. Partition by the business key and search exactly; the 2-billion-vector ANN problem was an artifact of not asking.</button>
+<button data-correct="false">The recall SLO, since fraud has a high cost of a miss and that determines whether PQ is acceptable.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">11. Running the sizing ladder for retail: filtering by category and brand leaves 80,000 candidates, which an exact scan handles in 20 ms against a 150 ms SLA. Why is exact search still the wrong answer here?</div>
+<button data-correct="false">Because 80,000 candidates is too many for a sequential scan to be reliable at P99.</button>
+<button data-correct="true">Because latency and throughput fail separately. Each query burns ~0.08 core-seconds, so at 500 QPS you need ~41 cores just for retrieval. It passes the SLA and is still unaffordable — which is why the ladder checks both.</button>
+<button data-correct="false">Because exact search cannot use the category and brand b-tree indexes at the same time.</button>
+<button data-correct="false">Because Postgres will not parallelise a sequential scan across more than four workers.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">12. Two of the eight ladder questions are usually treated as fixed inputs but are actually decisions with the largest cost leverage on the list. Which two?</div>
+<button data-correct="false">Peak QPS and the P99 latency SLA — both are negotiable with the product team.</button>
+<button data-correct="true">Chunks per document and embedding dimension. Halving chunk size doubles N; MRL truncation halves the dimension. Together they are a 4–8× swing in infrastructure cost, decided before a single row is indexed — larger than anything <code>ef_search</code> tuning can recover later.</button>
+<button data-correct="false">Document count and update rate — both are set by the business, not by engineering.</button>
+<button data-correct="false">Filter selectivity and cost of a miss, because both are determined by how the product is designed.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want to dig into the binary-quantization two-stage query, PgBouncer sizing for the post-cliff connection spike, the shadow-table swap for zero-downtime reindexing, or how to build the recall-monitoring job that catches graph decay? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day2/0008-pinecone-weaviate-milvus.html">&larr; Day 2: Managed Vector DBs</a>
+<a href="../day4/0010-hybrid-search-production.html">Day 4: Hybrid Search in Production &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

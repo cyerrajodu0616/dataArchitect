@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0008 — Pinecone, Weaviate, Milvus: What Purpose-Built Vector DBs Buy You</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#137333; font-weight:700; }
+  .matrix-table .no  { color:#c5221f; font-weight:700; }
+  .matrix-table .partial { color:#a8451f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .script-table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.9rem; }
+  .script-table th { background:#f4f2ee; padding:9px 12px; text-align:left; border:1px solid #e2ded8; }
+  .script-table td { padding:9px 12px; border:1px solid #e2ded8; vertical-align:top; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains ul { margin:0 0 0 1rem; }
+  .domains li { margin-bottom:0.3rem; font-size:0.87rem; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>Pinecone, Weaviate, Milvus — What They Offer That pgvector Doesn't</h1>
+<p class="subtitle">Week 2, Day 2 — managed scale, native hybrid search, and multi-tenancy as first-class primitives</p>
+
+<p>Day 1 covered how pgvector stores and indexes vectors inside Postgres. Today is the comparison you will actually be asked in an interview: <em>"Why not a real vector database?"</em> The wrong answer is a feature list. The right answer starts by reframing what class of problem a vector database solves — and that reframe is where your 14 years of data engineering is worth more than a GenAI engineer's vendor familiarity.</p>
+
+<div class="retail-tag">Retail framing</div>
+<div class="example-box">
+<div class="label">Scenario carried forward from Day 1</div>
+4M SKU embeddings, 500 QPS peak, sub-100ms P99. Now add three real requirements that Day 1 ignored:
+<ul style="margin-top:0.6rem;margin-bottom:0;">
+  <li><strong>Freshness:</strong> price and stock change every few minutes; a search result showing an out-of-stock item is a support ticket.</li>
+  <li><strong>Hybrid:</strong> customers paste exact SKUs and part numbers as often as they type natural language.</li>
+  <li><strong>Multi-tenancy:</strong> the platform serves 400 white-label storefronts. Storefront A must never retrieve storefront B's private catalog.</li>
+</ul>
+</div>
+
+<h2>1. Reframe the Question First</h2>
+
+<p>Most comparisons ask "which database has better recall/latency?" That is the least interesting axis — all four of these systems run HNSW variants and land within a few milliseconds of each other at retail scale. The architecturally decisive question is:</p>
+
+<div class="math-box">
+Where does vector state live <em>relative to your source of truth</em>?
+</div>
+
+<p>There are exactly two answers, and everything else follows from which one you pick:</p>
+
+<ul>
+  <li><strong>Co-located (pgvector):</strong> the embedding is a column on the row it describes. Writing the SKU and writing its vector is <em>one transaction</em>.</li>
+  <li><strong>Disaggregated (Pinecone / Weaviate / Milvus / Qdrant):</strong> the embedding lives in a second system. Writing the SKU and writing its vector are <em>two writes to two systems</em>.</li>
+</ul>
+
+<p>You have spent 14 years dealing with the consequences of that second sentence. It has a name.</p>
+
+<h2>2. The Dual-Write Problem — pgvector's Structural Advantage</h2>
+
+<p>The moment vectors live outside your operational database, you own a distributed-systems consistency problem that no amount of vendor SLA removes. This is the single strongest argument in your favour, and it is one most GenAI engineers cannot articulate.</p>
+
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="330" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">WRITE PATH: ONE COMMIT vs TWO SYSTEMS</text>
+
+  <!-- Divider -->
+  <line x1="350" y1="45" x2="350" y2="315" stroke="#ddd8d0" stroke-width="1.5" stroke-dasharray="5,4"/>
+
+  <!-- LEFT: pgvector -->
+  <text x="30" y="60" font-family="-apple-system,sans-serif" font-size="12" fill="#2e6b3e" font-weight="700">pgvector — co-located</text>
+
+  <rect x="30" y="75" width="120" height="34" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="90" y="97" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle">Ingest job</text>
+
+  <line x1="90" y1="109" x2="90" y2="135" stroke="#2e6b3e" stroke-width="1.5" marker-end="url(#agreen)"/>
+
+  <rect x="30" y="137" width="290" height="92" rx="8" fill="#e9f2ec" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="42" y="156" font-family="SFMono-Regular,monospace" font-size="10.5" fill="#2e6b3e" font-weight="700">BEGIN;</text>
+  <text x="54" y="174" font-family="SFMono-Regular,monospace" font-size="10.5" fill="#1a1a1a">UPDATE products SET price = 49.99 …</text>
+  <text x="54" y="192" font-family="SFMono-Regular,monospace" font-size="10.5" fill="#1a1a1a">UPDATE products SET embedding = […] …</text>
+  <text x="42" y="212" font-family="SFMono-Regular,monospace" font-size="10.5" fill="#2e6b3e" font-weight="700">COMMIT;</text>
+
+  <line x1="175" y1="229" x2="175" y2="252" stroke="#2e6b3e" stroke-width="1.5" marker-end="url(#agreen)"/>
+  <rect x="90" y="254" width="170" height="34" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="175" y="276" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle">Postgres (single WAL)</text>
+
+  <text x="30" y="308" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="600">Atomic. Row and vector can never disagree.</text>
+
+  <!-- RIGHT: external -->
+  <text x="378" y="60" font-family="-apple-system,sans-serif" font-size="12" fill="#a8451f" font-weight="700">External vector DB — disaggregated</text>
+
+  <rect x="378" y="75" width="120" height="34" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="438" y="97" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle">Ingest job</text>
+
+  <!-- branch lines -->
+  <line x1="415" y1="109" x2="415" y2="150" stroke="#a8451f" stroke-width="1.5" marker-end="url(#ared)"/>
+  <line x1="470" y1="109" x2="590" y2="150" stroke="#a8451f" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ared)"/>
+
+  <rect x="368" y="152" width="105" height="34" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="420" y="174" font-family="-apple-system,sans-serif" font-size="10.5" fill="#1a1a1a" text-anchor="middle">Postgres row</text>
+
+  <rect x="530" y="152" width="140" height="34" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="600" y="174" font-family="-apple-system,sans-serif" font-size="10.5" fill="#1a1a1a" text-anchor="middle">Vector DB upsert</text>
+
+  <text x="503" y="145" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f" font-weight="700">HTTP / gRPC</text>
+
+  <!-- failure X -->
+  <text x="600" y="206" font-family="-apple-system,sans-serif" font-size="11" fill="#c5221f" text-anchor="middle" font-weight="700">✕ times out</text>
+
+  <rect x="378" y="222" width="292" height="60" rx="8" fill="#fdf0ea" stroke="#a8451f" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="390" y="242" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a8451f" font-weight="700">Now you must build:</text>
+  <text x="390" y="259" font-family="-apple-system,sans-serif" font-size="10" fill="#333">transactional outbox → CDC → retry/DLQ → </text>
+  <text x="390" y="274" font-family="-apple-system,sans-serif" font-size="10" fill="#333">nightly reconciliation job → drift alerting</text>
+
+  <text x="378" y="308" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a8451f" font-weight="600">Eventually consistent. Stale and orphaned vectors are inevitable.</text>
+
+  <defs>
+    <marker id="agreen" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#2e6b3e"/></marker>
+    <marker id="ared" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#a8451f"/></marker>
+  </defs>
+</svg>
+
+<p>Two failure modes fall out of the right-hand diagram, and both have direct retail consequences:</p>
+
+<ul>
+  <li><strong>Stale vector:</strong> the description changed, the embedding didn't. Search retrieves the product under its <em>old</em> meaning. A re-listed "winter parka" still matching queries for the discontinued "rain shell" it used to be.</li>
+  <li><strong>Orphaned vector:</strong> the row was deleted, the vector delete failed. Search returns an ID that no longer joins to anything — a 404 in the result list, or worse, a delisted product still surfacing.</li>
+</ul>
+
+<p>The standard fix is the <strong>transactional outbox</strong> pattern: write the row and an outbox event in one Postgres transaction, then a CDC consumer (Debezium/Kafka) drains the outbox into the vector DB with at-least-once delivery and idempotent upserts. You have almost certainly built this before for a warehouse sync. That is exactly the point — it is a real, known, staffed engineering cost, and it is line-item zero on every vendor's pricing page.</p>
+
+<div class="caution">
+<div class="label">Interview trap</div>
+"Pinecone is fully managed, so operations are free." Managed means <em>they</em> operate the index. <em>You</em> still operate the sync pipeline, the reconciliation job, the drift dashboard, and the runbook for "vector store and Postgres disagree." The managed boundary sits at their API, not at your correctness requirement.
+</div>
+
+<h3>What drift costs, by domain</h3>
+
+<p>The dual-write problem is universal. What differs is what a stale vector actually <em>does</em> — and in two of these three domains it is not a quality problem.</p>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p>Stale embedding on a re-listed product; orphaned vector for a delisted SKU.</p>
+    <p><strong>Cost:</strong> a wrong or dead result in a search page. Measurable in conversion.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p>A rider is amended and refiled; the embedding still reflects the superseded wording.</p>
+    <p><strong>Cost:</strong> an underwriter is shown guidance that is no longer in force. That is a <em>mispriced risk</em> and an audit finding — and you cannot prove which version was retrieved unless you designed for it.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p>A merchant is reclassified or an account's risk tier changes; the vector store hasn't caught up.</p>
+    <p><strong>Cost:</strong> fraud scoring on stale features. Under SR 11-7 model risk management you owe an explanation of the inputs — "the sync was 40 seconds behind" is one you have to be able to give.</p>
+  </div>
+</div>
+
+<h3>The argument that ends the discussion in a regulated domain</h3>
+
+<p>There is a consideration in insurance and fintech that does not exist in retail, and it is usually decisive before any of the technical comparison matters.</p>
+
+<div class="math-box">
+An embedding derived from PHI or PII is, for regulatory purposes, still that data.
+</div>
+
+<p>An embedding of an applicant's medical questionnaire is not anonymised. Embedding inversion research has repeatedly shown that substantial source text can be reconstructed from dense vectors, so the sensible compliance posture — and increasingly the one auditors take — is to treat the vector with the same controls as the record it came from. That has consequences:</p>
+
+<ul>
+  <li><strong>The vector store enters your compliance scope.</strong> A third-party managed service now needs vendor security review, a data-processing agreement, and for PHI a signed BAA. Not every vector database vendor will sign one.</li>
+  <li><strong>Data residency applies to the vectors.</strong> "Our Postgres is in-region but our vector index is wherever the vendor's serverless tier put it" is a finding.</li>
+  <li><strong>Right-to-erasure gets harder.</strong> A deletion request must remove the row <em>and</em> the vector, and you must be able to <em>evidence</em> both. Across a dual-write boundary that is a reconciliation problem with a legal deadline attached.</li>
+  <li><strong>Access control fragments.</strong> Postgres row-level security does not extend into an external index. You are reimplementing authorisation in a second system — and a retrieval bug becomes an unauthorised disclosure rather than a bad search result.</li>
+</ul>
+
+<div class="verdict">
+<div class="label">The one-liner for an insurtech or fintech interview</div>
+"Co-locating vectors in Postgres keeps sensitive data inside a boundary that's already been through security review, and keeps row-level security and deletion as single-system operations. Moving embeddings to a managed vector DB expands the compliance perimeter to a new vendor and turns right-to-erasure into a reconciliation problem with a regulatory deadline. In a regulated domain that usually settles it before we get to recall benchmarks."
+</div>
+
+<div class="caution">
+<div class="label">Hold this one honestly too</div>
+It is an argument for <em>data locality</em>, not specifically for Postgres. A self-hosted Weaviate or Milvus inside your own VPC keeps the data in your perimeter as well. What pgvector uniquely preserves is that deletion, access control, and audit stay <strong>one system and one transaction</strong>. If someone pushes back with "we'd self-host Milvus in-VPC," the correct response is that they've solved residency but not the dual-write, RLS, or evidencing problems — not that they're wrong about residency.
+</div>
+
+<h2>3. Pinecone — Managed Serverless, Namespaces, Zero Knobs</h2>
+
+<p>Pinecone is the "you will never see an index parameter" option. It is closed-source and cloud-only — there is no self-hosted build, which is itself an architectural decision (a hard dependency on a single vendor's availability and pricing).</p>
+
+<h3>Architecture</h3>
+<p>Pinecone's serverless tier separates storage from compute: vectors live in cloud object storage, and query executors are spun up against the relevant slices on demand. You do not size nodes, choose an index type, or tune <code>ef_search</code>. You get an endpoint.</p>
+
+<div class="code-inline">from pinecone import Pinecone
+
+pc = Pinecone(api_key="…")
+index = pc.Index("retail-catalog")
+
+# Namespaces are the multi-tenancy primitive — a logical partition inside one index.
+index.upsert(
+    vectors=[{"id": "SKU-88213", "values": [...], "metadata": {"category": "boots", "price": 129.0}}],
+    namespace="storefront-a",          # <-- tenant isolation
+)
+
+index.query(
+    vector=[...],
+    top_k=10,
+    namespace="storefront-a",          # query CANNOT cross namespaces
+    filter={"category": {"$eq": "boots"}, "price": {"$lte": 150}},
+    include_metadata=True,
+)</div>
+
+<h3>What it genuinely buys you</h3>
+<ul>
+  <li><strong>Namespaces at scale.</strong> One index, thousands of isolated partitions, no per-tenant infrastructure. A namespace with zero queries costs only storage. This is the cleanest answer to the 400-storefront requirement.</li>
+  <li><strong>No index tuning.</strong> There is no IVFFlat-vs-HNSW decision, no <code>lists</code>, no rebuild-after-bulk-load. Day 1's entire cold-start problem disappears.</li>
+  <li><strong>Elastic cost at low volume.</strong> Serverless bills on storage + read units + write units, so an idle namespace is near-free. A 24/7 provisioned Postgres instance is not.</li>
+  <li><strong>Integrated reranking and hosted embedding models</strong>, so a small team can ship retrieval without standing up model-serving infrastructure.</li>
+</ul>
+
+<div class="caution">
+<div class="label">What you give up</div>
+<ul style="margin-bottom:0;">
+  <li><strong>Eventual consistency on writes.</strong> An upsert is not immediately queryable — there is a freshness lag measured in seconds. For a price-and-stock-sensitive catalog this must be designed around, not assumed away.</li>
+  <li><strong>No joins.</strong> Metadata filters only. To render a result you fetch IDs from Pinecone and then hydrate from Postgres anyway — so you are running two systems on the read path too.</li>
+  <li><strong>Metadata is duplicated.</strong> Every filterable attribute (category, price, stock) must be copied into Pinecone and kept in sync — which multiplies the dual-write surface from one field to many.</li>
+  <li><strong>No exit.</strong> Closed source. Your migration path is a full re-index into another system.</li>
+</ul>
+</div>
+
+<h2>4. Weaviate — Native Hybrid Search and Real Multi-Tenancy</h2>
+
+<p>Weaviate is open source (Go, BSD-3) with a managed cloud option. Of the three, it has the strongest answer to two of our three requirements: hybrid search and multi-tenancy.</p>
+
+<h3>Hybrid search is a first-class query, not an application-layer bolt-on</h3>
+
+<p>Recall Week 1 Day 4: BM25 handles exact SKU strings that dense vectors miss entirely (zero token overlap → dense embeddings have no anchor), and you fuse the two ranked lists with RRF. In Weaviate that is one parameter.</p>
+
+<div class="code-inline">// alpha = 0.0 → pure BM25 keyword
+// alpha = 1.0 → pure vector
+// alpha = 0.5 → balanced fusion
+{
+  Get {
+    Product(
+      hybrid: {
+        query: "waterproof hiking boot SKU-88213"
+        alpha: 0.6
+        fusionType: relativeScoreFusion   # or rankedFusion (RRF, k=60)
+      }
+      limit: 10
+    ) { sku description _additional { score explainScore } }
+  }
+}</div>
+
+<p>Two fusion strategies matter architecturally:</p>
+<ul>
+  <li><strong>rankedFusion</strong> — RRF. Uses only rank position, so it is scale-invariant (the Day 4 argument: BM25 scores are unbounded, cosine is bounded to [−1, 1], so you cannot add them directly).</li>
+  <li><strong>relativeScoreFusion</strong> — normalises both score distributions and blends the actual values. Preserves the <em>magnitude</em> of a strong match, which rank-only fusion throws away. Generally better when one retriever is confidently right.</li>
+</ul>
+
+<p>In pgvector you would implement this yourself: a <code>tsvector</code> column with <code>ts_rank_cd</code> (or ParadeDB's <code>pg_search</code> for real BM25), two CTEs, and a hand-written RRF join. Perfectly doable — you wrote that exact script on Day 4 — but it is your code to own and tune.</p>
+
+<h3>Multi-tenancy: a shard and an index per tenant</h3>
+
+<p>Weaviate's multi-tenancy is not a filter. Each tenant gets its own physical shard with its own HNSW graph, and tenants have a lifecycle: <code>ACTIVE</code> (in memory, queryable), <code>INACTIVE</code> (on local disk, not loaded), <code>OFFLOADED</code> (pushed to object storage).</p>
+
+<div class="code-inline">from weaviate.classes.config import Configure, MultiTenancyConfig
+
+client.collections.create(
+    name="Product",
+    multi_tenancy_config=Configure.multi_tenancy(
+        enabled=True,
+        auto_tenant_creation=True,     # tenant appears on first write
+        auto_tenant_activation=True,   # cold tenant warms on first query
+    ),
+)
+
+products = client.collections.get("Product").with_tenant("storefront-a")
+products.query.hybrid(query="waterproof hiking boot", alpha=0.6, limit=10)</div>
+
+<p>For 400 storefronts where most are low-traffic, this is the operationally correct shape: a dormant storefront costs object-storage bytes, not RAM in a shared HNSW graph. In pgvector the equivalent is table-per-tenant (400 tables, 400 HNSW indexes, and Postgres catalog bloat) or a shared table with a <code>tenant_id</code> filter — which lands you straight back in Day 1's pre-filter problem.</p>
+
+<details>
+<summary>Weaviate's other differentiator: vectorizer modules</summary>
+<div class="details-body">
+<p>Weaviate can call the embedding model for you at ingest and query time (<code>text2vec-openai</code>, <code>text2vec-cohere</code>, local transformers), and generative modules can run the RAG completion inside the query.</p>
+<p><strong>Architect's read:</strong> this is a genuine accelerator for a small team and a genuine <em>anti</em>-pattern for yours. It moves embedding generation — a batch, backfillable, cost-controlled, version-pinned pipeline concern — inside a database request path you don't control. When the model version changes you want a Spark job re-embedding 4M SKUs on your schedule with your retry semantics, not an implicit per-insert API call to OpenAI with the vendor's timeout policy. Say this out loud in an interview; it is exactly the judgment a platform architect is hired for.</p>
+</div>
+</details>
+
+<h2>5. Milvus — Distributed by Construction</h2>
+
+<p>Milvus (Apache 2.0, LF AI &amp; Data; managed as Zilliz Cloud) is the one built for the billion-vector case. Its architecture will look immediately familiar to you — it is a disaggregated, log-structured, storage-compute-separated system in the same lineage as the warehouse engines you already operate.</p>
+
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="340" rx="10" fill="#1e1e2e" stroke="#333"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6c7086" letter-spacing="1" font-weight="600">SINGLE-NODE vs DISAGGREGATED: WHAT SCALES INDEPENDENTLY</text>
+
+  <!-- LEFT: pgvector -->
+  <text x="28" y="56" font-family="-apple-system,sans-serif" font-size="11" fill="#a6e3a1" font-weight="700">pgvector — one process</text>
+  <rect x="28" y="70" width="180" height="205" rx="8" fill="#2a2a3c" stroke="#a6e3a1" stroke-width="1.5"/>
+  <text x="118" y="95" font-family="-apple-system,sans-serif" font-size="10.5" fill="#cdd6f4" text-anchor="middle">SQL parser / planner</text>
+  <line x1="48" y1="105" x2="188" y2="105" stroke="#45475a"/>
+  <text x="118" y="127" font-family="-apple-system,sans-serif" font-size="10.5" fill="#cdd6f4" text-anchor="middle">HNSW index scan</text>
+  <line x1="48" y1="137" x2="188" y2="137" stroke="#45475a"/>
+  <text x="118" y="159" font-family="-apple-system,sans-serif" font-size="10.5" fill="#cdd6f4" text-anchor="middle">shared_buffers</text>
+  <line x1="48" y1="169" x2="188" y2="169" stroke="#45475a"/>
+  <text x="118" y="191" font-family="-apple-system,sans-serif" font-size="10.5" fill="#cdd6f4" text-anchor="middle">WAL</text>
+  <line x1="48" y1="201" x2="188" y2="201" stroke="#45475a"/>
+  <text x="118" y="223" font-family="-apple-system,sans-serif" font-size="10.5" fill="#cdd6f4" text-anchor="middle">heap pages / local disk</text>
+  <text x="118" y="256" font-family="-apple-system,sans-serif" font-size="10" fill="#f9e2af" text-anchor="middle">scale = bigger box</text>
+  <text x="118" y="270" font-family="-apple-system,sans-serif" font-size="10" fill="#f9e2af" text-anchor="middle">+ read replicas</text>
+
+  <text x="28" y="300" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086">Vertical only. Index build competes with</text>
+  <text x="28" y="315" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086">query traffic for the same CPU and RAM.</text>
+
+  <!-- RIGHT: Milvus -->
+  <text x="255" y="56" font-family="-apple-system,sans-serif" font-size="11" fill="#89b4fa" font-weight="700">Milvus — four layers, each scaled independently</text>
+
+  <rect x="255" y="70" width="415" height="42" rx="6" fill="#2a2a3c" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="268" y="88" font-family="-apple-system,sans-serif" font-size="10" fill="#89b4fa" font-weight="700">ACCESS LAYER</text>
+  <text x="268" y="103" font-family="-apple-system,sans-serif" font-size="10" fill="#cdd6f4">Stateless proxies — scale with QPS</text>
+
+  <rect x="255" y="120" width="415" height="42" rx="6" fill="#2a2a3c" stroke="#cba6f7" stroke-width="1.5"/>
+  <text x="268" y="138" font-family="-apple-system,sans-serif" font-size="10" fill="#cba6f7" font-weight="700">COORDINATOR</text>
+  <text x="268" y="153" font-family="-apple-system,sans-serif" font-size="10" fill="#cdd6f4">Metadata, segment allocation, load balancing</text>
+
+  <rect x="255" y="170" width="415" height="56" rx="6" fill="#2a2a3c" stroke="#f9e2af" stroke-width="1.5"/>
+  <text x="268" y="188" font-family="-apple-system,sans-serif" font-size="10" fill="#f9e2af" font-weight="700">WORKER NODES</text>
+  <text x="268" y="203" font-family="-apple-system,sans-serif" font-size="10" fill="#cdd6f4">Query nodes · Data nodes · Index nodes</text>
+  <text x="268" y="218" font-family="-apple-system,sans-serif" font-size="10" fill="#a6adc8">index build NEVER competes with query CPU</text>
+
+  <rect x="255" y="234" width="415" height="56" rx="6" fill="#2a2a3c" stroke="#94e2d5" stroke-width="1.5"/>
+  <text x="268" y="252" font-family="-apple-system,sans-serif" font-size="10" fill="#94e2d5" font-weight="700">STORAGE</text>
+  <text x="268" y="267" font-family="-apple-system,sans-serif" font-size="10" fill="#cdd6f4">etcd (metadata) · S3/MinIO (segments) · Kafka/Pulsar (log broker)</text>
+  <text x="268" y="282" font-family="-apple-system,sans-serif" font-size="10" fill="#a6adc8">log-as-data: the write log IS the source of truth</text>
+
+  <text x="255" y="315" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086">Horizontal. Billions of vectors. Also: four more systems on your on-call rotation.</text>
+</svg>
+
+<p>Three things to take from that diagram, all of which map onto things you already know:</p>
+
+<ol>
+  <li><strong>Index build is isolated.</strong> Dedicated index nodes mean rebuilding a 4M-vector HNSW graph does not steal CPU from live queries. In pgvector, <code>CREATE INDEX</code> and your Black Friday traffic share one machine — the reason Day 1's IVFFlat rebuild cadence is a real operational constraint.</li>
+  <li><strong>Log-as-data.</strong> Writes land in a message queue first; workers consume and materialise segments. This is the same design as a streaming lakehouse, and it is why Milvus can absorb high-velocity ingestion without blocking reads.</li>
+  <li><strong>Tunable consistency.</strong> Milvus exposes consistency as a per-query knob — <code>Strong</code>, <code>BoundedStaleness</code>, <code>Session</code>, <code>Eventual</code>. Pinecone gives you eventual and no dial.</li>
+</ol>
+
+<div class="code-inline">from pymilvus import MilvusClient
+
+client = MilvusClient(uri="http://milvus:19530")
+
+# Consistency is a query-time decision, not a deployment-time one.
+client.search(
+    collection_name="products",
+    data=[query_vec],
+    limit=10,
+    filter='category == "boots" and price &lt;= 150',
+    consistency_level="Bounded",   # Strong | Bounded | Session | Eventual
+    partition_names=["storefront_a"],
+)</div>
+
+<details>
+<summary>Milvus's index zoo — and why breadth of index support actually matters</summary>
+<div class="details-body">
+<p>pgvector gives you two ANN indexes (IVFFlat, HNSW). Milvus gives you roughly a dozen, and the ones that matter architecturally are the memory-reduction families:</p>
+<ul>
+  <li><strong>IVF_SQ8 / IVF_PQ</strong> — scalar and product quantization. PQ can cut memory ~10–20× at a recall cost, which is how you fit a billion vectors in affordable RAM.</li>
+  <li><strong>DiskANN</strong> — graph index designed to live on NVMe rather than RAM. This is the "your index no longer has to fit in memory" escape hatch, and it is the single biggest cost lever at 100M+ scale.</li>
+  <li><strong>GPU_CAGRA / GPU_IVF_*</strong> — GPU-resident indexes for very high QPS.</li>
+</ul>
+<p>pgvector has partially closed this gap: <code>halfvec</code> (fp16, halves storage), binary quantization, and <code>sparsevec</code> arrived in 0.7. And the Timescale extension <code>pgvectorscale</code> brings StreamingDiskANN plus statistical binary quantization to Postgres directly. Know that this gap is narrowing — asserting "pgvector has no quantization" in an interview dates you.</p>
+</div>
+</details>
+
+<h2>6. Sidebar: Qdrant and the Filtered-ANN Problem</h2>
+
+<p>Qdrant (Rust, Apache 2.0) is not on the plan's list but belongs in your answer, because it directly solves the limitation Day 1 ended on.</p>
+
+<p>Day 1's pre-filter dilemma: with <code>WHERE category = 'boots'</code>, you either run ANN then filter (fast, but may return fewer than <em>k</em> results) or filter then exact-scan (accurate, but loses ANN's speed). Qdrant's <strong>filterable HNSW</strong> pushes the payload filter <em>into</em> the graph traversal — the search only walks nodes that satisfy the predicate, and the graph is built with extra links so the filtered subgraph stays connected. Weaviate and Milvus have their own filtered-search implementations in the same spirit.</p>
+
+<div class="verdict">
+<div class="label">Update to your Day 1 answer</div>
+pgvector 0.8 added <strong>iterative index scans</strong>, which re-probe the index when a filter eliminates too many candidates instead of returning a short result set. That closes the worst of the pre-filter gap without leaving Postgres. Filtered ANN is no longer a reason on its own to adopt a dedicated vector DB — but highly selective filters at high QPS still favour a filter-aware graph.
+</div>
+
+<h2>7. The Capability Matrix</h2>
+
+<table class="matrix-table">
+  <tr>
+    <th>Capability</th>
+    <th>pgvector</th>
+    <th>Pinecone</th>
+    <th>Weaviate</th>
+    <th>Milvus</th>
+  </tr>
+  <tr>
+    <td><strong>Transactional write with source data</strong></td>
+    <td class="yes">Yes — one commit</td>
+    <td class="no">No</td>
+    <td class="no">No</td>
+    <td class="no">No</td>
+  </tr>
+  <tr>
+    <td><strong>SQL joins to relational data</strong></td>
+    <td class="yes">Yes</td>
+    <td class="no">No</td>
+    <td class="partial">Cross-references only</td>
+    <td class="no">No</td>
+  </tr>
+  <tr>
+    <td><strong>Horizontal scale-out of the index</strong></td>
+    <td class="no">No (vertical + replicas)</td>
+    <td class="yes">Yes (managed)</td>
+    <td class="yes">Yes (sharded)</td>
+    <td class="yes">Yes (native, per-layer)</td>
+  </tr>
+  <tr>
+    <td><strong>Native hybrid (BM25 + dense)</strong></td>
+    <td class="partial">DIY via tsvector / pg_search</td>
+    <td class="partial">Sparse-dense + hosted rerank</td>
+    <td class="yes">Built-in, alpha + fusion</td>
+    <td class="yes">Built-in, RRF / weighted</td>
+  </tr>
+  <tr>
+    <td><strong>Multi-tenancy primitive</strong></td>
+    <td class="partial">RLS / table-per-tenant</td>
+    <td class="yes">Namespaces</td>
+    <td class="yes">Tenant shards + offload</td>
+    <td class="yes">Partitions / partition key</td>
+  </tr>
+  <tr>
+    <td><strong>Filter-aware ANN</strong></td>
+    <td class="partial">Iterative scans (0.8+)</td>
+    <td class="yes">Yes</td>
+    <td class="yes">Yes</td>
+    <td class="yes">Yes</td>
+  </tr>
+  <tr>
+    <td><strong>Quantization / on-disk index</strong></td>
+    <td class="partial">halfvec, binary; DiskANN via pgvectorscale</td>
+    <td class="yes">Managed, opaque</td>
+    <td class="yes">PQ / BQ / SQ</td>
+    <td class="yes">Widest: PQ, SQ, DiskANN, GPU</td>
+  </tr>
+  <tr>
+    <td><strong>Tunable read consistency</strong></td>
+    <td class="yes">Full ACID / MVCC</td>
+    <td class="no">Eventual only</td>
+    <td class="partial">Tunable replica consistency</td>
+    <td class="yes">4 explicit levels</td>
+  </tr>
+  <tr>
+    <td><strong>Self-hostable</strong></td>
+    <td class="yes">Yes</td>
+    <td class="no">No — cloud only</td>
+    <td class="yes">Yes (BSD-3)</td>
+    <td class="yes">Yes (Apache 2.0)</td>
+  </tr>
+  <tr>
+    <td><strong>New systems on your on-call rotation</strong></td>
+    <td class="yes">Zero</td>
+    <td class="partial">One vendor dependency</td>
+    <td class="partial">One cluster</td>
+    <td class="no">Cluster + etcd + object store + MQ</td>
+  </tr>
+  <tr>
+    <td><strong>Reuses existing backup / PITR / RBAC / monitoring</strong></td>
+    <td class="yes">Yes — all of it</td>
+    <td class="no">No</td>
+    <td class="no">No</td>
+    <td class="no">No</td>
+  </tr>
+</table>
+
+<h2>8. Multi-Tenancy — The Requirement That Actually Forces the Decision</h2>
+
+<p>Of our three added requirements, freshness favours pgvector and hybrid is a wash (you can build it). Multi-tenancy at 400 storefronts is the one where the purpose-built systems have a structural answer and Postgres has a workaround.</p>
+
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="300" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">FOUR TENANCY MODELS — ISOLATION vs COST</text>
+
+  <!-- Row 1 -->
+  <rect x="24" y="44" width="300" height="52" rx="7" fill="#fff" stroke="#c5221f" stroke-width="1.5"/>
+  <text x="38" y="64" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" font-weight="700">1. Shared index + tenant_id filter</text>
+  <text x="38" y="82" font-family="-apple-system,sans-serif" font-size="10" fill="#555">One HNSW graph. Every tenant's vectors interleaved.</text>
+  <text x="340" y="66" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f" font-weight="700">✕ Isolation is a WHERE clause</text>
+  <text x="340" y="82" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Recall degrades on selective tenants. One bug = data leak.</text>
+
+  <!-- Row 2 -->
+  <rect x="24" y="106" width="300" height="52" rx="7" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="38" y="126" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" font-weight="700">2. Table-per-tenant (pgvector)</text>
+  <text x="38" y="144" font-family="-apple-system,sans-serif" font-size="10" fill="#555">400 tables, 400 HNSW indexes, one Postgres.</text>
+  <text x="340" y="128" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" font-weight="700">△ Real isolation, poor elasticity</text>
+  <text x="340" y="144" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Every index competes for one shared_buffers. Catalog bloat.</text>
+
+  <!-- Row 3 -->
+  <rect x="24" y="168" width="300" height="52" rx="7" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="38" y="188" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" font-weight="700">3. Namespace / partition (Pinecone, Milvus)</text>
+  <text x="38" y="206" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Logical partition; queries scoped at the API boundary.</text>
+  <text x="340" y="190" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" font-weight="700">✓ Cheap, scales to thousands</text>
+  <text x="340" y="206" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Idle tenant ≈ storage cost only.</text>
+
+  <!-- Row 4 -->
+  <rect x="24" y="230" width="300" height="52" rx="7" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+  <text x="38" y="250" font-family="-apple-system,sans-serif" font-size="11" fill="#1a1a1a" font-weight="700">4. Tenant shard + offload (Weaviate)</text>
+  <text x="38" y="268" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Own shard, own HNSW, ACTIVE→INACTIVE→OFFLOADED.</text>
+  <text x="340" y="252" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" font-weight="700">✓ Physical isolation + hot/cold tiering</text>
+  <text x="340" y="268" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Dormant storefront costs S3 bytes, not RAM.</text>
+</svg>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — 400 storefronts</div>
+    <p>White-label catalogs. Traffic heavily skewed: a handful of large storefronts, a long tail of dormant ones.</p>
+    <p><strong>Isolation need:</strong> commercial. Storefront A must not see B's catalog or pricing.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurtech — N carriers / distributors</div>
+    <p>A platform underwriting on behalf of multiple carriers, each with its own filed forms and guidelines. This is the same shape as the retail case with the stakes raised.</p>
+    <p><strong>Isolation need:</strong> contractual and regulatory. Carrier A's underwriting guidelines are trade secrets; leakage is a breach of contract, not a UX bug.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech — BaaS program tenants</div>
+    <p>Sponsor-bank programs, each with its own disclosures and risk policies.</p>
+    <p><strong>Isolation need:</strong> regulatory. Program separation is examined.</p>
+  </div>
+</div>
+
+<p>Model 1 is the one to argue against hardest, and the argument is a data-engineering one, not a security one: <strong>a shared ANN graph makes recall a function of tenant size</strong>. A storefront with 2,000 SKUs inside a 4M-vector graph is a highly selective filter — exactly the case where ANN traversal wanders through millions of irrelevant neighbours before finding enough matching candidates. Small tenants get measurably worse search than large ones, and the metric that exposes it (recall segmented by tenant size) is not on any default dashboard.</p>
+
+<h2>9. Cost and Operating Model</h2>
+
+<p>The comparison people usually get wrong is comparing a managed vendor's bill to a Postgres instance's bill. That is not the comparison. The comparison is:</p>
+
+<div class="math-box">
+Total cost = infrastructure + <em>sync pipeline engineering</em> + <em>on-call surface</em> + migration risk
+</div>
+
+<svg viewBox="0 0 700 285" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="285" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">ALL-IN MONTHLY COST — 4M VECTORS, 500 PEAK QPS</text>
+
+  <!-- legend -->
+  <rect x="300" y="16" width="11" height="11" fill="#1f5f8b"/><text x="316" y="26" font-family="-apple-system,sans-serif" font-size="9.5" fill="#333">infrastructure</text>
+  <rect x="404" y="16" width="11" height="11" fill="#a8451f"/><text x="420" y="26" font-family="-apple-system,sans-serif" font-size="9.5" fill="#333">sync pipeline build</text>
+  <rect x="536" y="16" width="11" height="11" fill="#c8a44a"/><text x="552" y="26" font-family="-apple-system,sans-serif" font-size="9.5" fill="#333">ongoing ops</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <!-- pgvector -->
+    <text x="24" y="66" fill="#333" font-weight="700">pgvector</text>
+    <rect x="150" y="54" height="20" fill="#1f5f8b" width="0"><animate attributeName="width" from="0" to="21" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <rect x="171" y="54" height="20" fill="#c8a44a" width="0"><animate attributeName="width" from="0" to="12" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <text x="196" y="68" fill="#2e6b3e" font-weight="700" opacity="0">$2,058/mo &#160; &#8212; no sync pipeline to build
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.1s"/></text>
+
+    <!-- Weaviate -->
+    <text x="24" y="116" fill="#333" font-weight="700">Weaviate Cloud</text>
+    <rect x="150" y="104" height="20" fill="#1f5f8b" width="0"><animate attributeName="width" from="0" to="9" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <rect x="159" y="104" height="20" fill="#a8451f" width="0"><animate attributeName="width" from="0" to="14" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <rect x="173" y="104" height="20" fill="#c8a44a" width="0"><animate attributeName="width" from="0" to="59" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <text x="240" y="118" fill="#555" font-weight="700" opacity="0">$5,199/mo
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.35s"/></text>
+
+    <!-- Milvus -->
+    <text x="24" y="166" fill="#333" font-weight="700">Milvus (self-host)</text>
+    <rect x="150" y="154" height="20" fill="#1f5f8b" width="0"><animate attributeName="width" from="0" to="45" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <rect x="195" y="154" height="20" fill="#a8451f" width="0"><animate attributeName="width" from="0" to="14" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <rect x="209" y="154" height="20" fill="#c8a44a" width="0"><animate attributeName="width" from="0" to="178" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <text x="396" y="168" fill="#555" font-weight="700" opacity="0">$14,926/mo &#160; &#8212; ops dominates
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+
+    <!-- Pinecone -->
+    <text x="24" y="216" fill="#333" font-weight="700">Pinecone</text>
+    <rect x="150" y="204" height="20" fill="#1f5f8b" width="0"><animate attributeName="width" from="0" to="411" dur="0.9s" fill="freeze" begin="0.95s"/></rect>
+    <rect x="561" y="204" height="20" fill="#a8451f" width="0"><animate attributeName="width" from="0" to="14" dur="0.9s" fill="freeze" begin="0.95s"/></rect>
+    <rect x="575" y="204" height="20" fill="#c8a44a" width="0"><animate attributeName="width" from="0" to="36" dur="0.9s" fill="freeze" begin="0.95s"/></rect>
+    <text x="656" y="199" fill="#555" font-weight="700" text-anchor="end" opacity="0">$29,048/mo
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.85s"/></text>
+    <text x="156" y="218" fill="#fff" font-size="9.5" font-weight="700" opacity="0">consumption billing &#8212; this bar grows with your traffic, including bad traffic
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.85s"/></text>
+  </g>
+
+  <line x1="150" y1="44" x2="150" y2="232" stroke="#c9c3b8" stroke-width="1"/>
+
+  <text x="24" y="256" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">pgvector's advantage is not the infrastructure line &#8212; it is the <tspan font-weight="700">missing orange bar</tspan> and the short yellow one.</text>
+  <text x="24" y="273" font-family="-apple-system,sans-serif" font-size="10" fill="#777">Vendor prices are Q1-2026 ballparks. Run vectordb_tco_calc.py with your own numbers.</text>
+</svg>
+
+<table class="matrix-table">
+  <tr>
+    <th>Cost component</th>
+    <th>pgvector</th>
+    <th>Managed (Pinecone / Weaviate Cloud / Zilliz)</th>
+    <th>Self-hosted Milvus</th>
+  </tr>
+  <tr>
+    <td>Infrastructure</td>
+    <td>Existing Postgres, sized up (RAM-dominated)</td>
+    <td>Usage-based: storage + read/write units</td>
+    <td>K8s cluster + etcd + object store + Kafka/Pulsar</td>
+  </tr>
+  <tr>
+    <td>Sync pipeline build</td>
+    <td><strong>None</strong> — same transaction</td>
+    <td>Outbox + CDC + reconciliation (weeks of work)</td>
+    <td>Same as managed</td>
+  </tr>
+  <tr>
+    <td>Ongoing ops</td>
+    <td>Absorbed by existing DBA/DE function</td>
+    <td>Vendor runs the index; you run the sync</td>
+    <td>≈0.5–1 FTE platform engineer</td>
+  </tr>
+  <tr>
+    <td>Scaling ceiling</td>
+    <td>Single-node RAM. Tens of millions of vectors is the realistic wall.</td>
+    <td>Effectively none</td>
+    <td>Billions</td>
+  </tr>
+  <tr>
+    <td>Cost shape</td>
+    <td>Fixed, predictable, steps up in instance sizes</td>
+    <td>Variable — scales with traffic, including bad traffic</td>
+    <td>Fixed and large; poor economics below ~50M vectors</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">The line that wins the interview</div>
+"At 4M vectors the vector database is not the hard part — the freshness contract with the catalog is. pgvector makes that contract a transaction. Every other option makes it a pipeline I have to build, staff, and monitor. I'd need a scale, tenancy, or hybrid requirement that Postgres genuinely can't meet before I'd take on a second system — and I'd name the specific number that triggers the migration up front."
+</div>
+
+<h2>10. The Decision Framework</h2>
+
+<p>Four trigger conditions. If none fire, stay on pgvector. If one fires, name it explicitly — this is what turns a preference into an architectural decision.</p>
+
+<table class="matrix-table">
+  <tr>
+    <th>Trigger</th>
+    <th>Threshold (state the number)</th>
+    <th>Move to</th>
+  </tr>
+  <tr>
+    <td><strong>Volume</strong></td>
+    <td>Index no longer fits in a single node's RAM at acceptable cost — roughly 50M+ vectors at 1536 dims, or sooner if you can't quantize</td>
+    <td>Milvus / Zilliz (or pgvectorscale DiskANN first)</td>
+  </tr>
+  <tr>
+    <td><strong>Tenancy</strong></td>
+    <td>Hundreds+ of tenants with skewed traffic and per-tenant isolation requirements</td>
+    <td>Weaviate (shards + offload) or Pinecone (namespaces)</td>
+  </tr>
+  <tr>
+    <td><strong>Write velocity</strong></td>
+    <td>Sustained embedding ingest saturates the same instance serving queries; index maintenance can't fit a maintenance window</td>
+    <td>Milvus (isolated index nodes)</td>
+  </tr>
+  <tr>
+    <td><strong>Team shape</strong></td>
+    <td>No Postgres operations capability on the team at all</td>
+    <td>Pinecone (fewest knobs)</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">Before you migrate — the Postgres-ecosystem escape hatches</div>
+Three of the four triggers have an in-Postgres answer to try first, and knowing them is what separates "I like Postgres" from an informed position:
+<ul style="margin-bottom:0;">
+  <li><strong>pgvectorscale</strong> (Timescale) — StreamingDiskANN + statistical binary quantization. Directly attacks the volume trigger.</li>
+  <li><strong>ParadeDB <code>pg_search</code></strong> — real BM25 inside Postgres. Closes the native-hybrid gap.</li>
+  <li><strong>AlloyDB / Aurora</strong> — managed Postgres with vendor ANN work (AlloyDB ships ScaNN). Buys headroom without a new system.</li>
+  <li><strong>Citus</strong> — sharded Postgres, if the tenancy model maps cleanly to a distribution column.</li>
+</ul>
+</div>
+
+<h2>11. The Wider Field — Which Other Databases Have Vectors?</h2>
+
+<p>Framing this as "pgvector vs the vector databases" is already out of date. Between 2023 and 2025 essentially <strong>every major RDBMS shipped a native vector type</strong>. The strategic read matters more than the feature list: the industry has decided vector search is a <em>datatype</em>, not a product category — which is exactly the bet co-location makes.</p>
+
+<table class="matrix-table">
+  <tr><th>Database</th><th>Type / since</th><th>ANN index</th><th>Notable</th></tr>
+  <tr>
+    <td><strong>PostgreSQL</strong> (pgvector)</td><td><code>vector</code>, 2021</td><td>IVFFlat, HNSW</td>
+    <td>The reference implementation. Extensions extend it further: <code>pgvectorscale</code> (StreamingDiskANN), <code>pg_search</code> (BM25).</td>
+  </tr>
+  <tr>
+    <td><strong>Oracle 23ai</strong></td><td><code>VECTOR</code>, 2024</td><td>HNSW, IVF</td>
+    <td>Up to 65,535 dims. Has a <em>dedicated</em> vector memory pool (<code>VECTOR_MEMORY_SIZE</code>) rather than competing with the buffer cache — a genuinely better design than pgvector's here.</td>
+  </tr>
+  <tr>
+    <td><strong>SQL Server 2025</strong></td><td><code>vector</code>, 2025</td><td>DiskANN</td>
+    <td>DiskANN natively — the on-SSD index family pgvector needs an extension for. Dimension cap is low (~1,998).</td>
+  </tr>
+  <tr>
+    <td><strong>MariaDB 11.7+</strong></td><td><code>VECTOR</code>, 2024</td><td>mHNSW</td>
+    <td>First major open-source RDBMS after Postgres with built-in vector <em>indexing</em>.</td>
+  </tr>
+  <tr>
+    <td><strong>MySQL 9.x</strong></td><td><code>VECTOR</code>, 2024</td><td class="no">None in community</td>
+    <td>The type exists but community MySQL has no ANN index — searches are brute force. Indexed vector search is a HeatWave (paid) feature. Easy trap.</td>
+  </tr>
+  <tr>
+    <td><strong>SingleStore</strong></td><td>Vector, long-standing</td><td>IVF_FLAT/PQ, HNSW_FLAT/PQ</td>
+    <td>Distributed from the ground up — see §13.</td>
+  </tr>
+  <tr>
+    <td><strong>ClickHouse</strong></td><td>Array + vector index</td><td>HNSW (usearch)</td>
+    <td>Analytical, distributed. Strong when vectors sit beside huge event tables.</td>
+  </tr>
+  <tr>
+    <td><strong>DuckDB</strong></td><td><code>vss</code> extension</td><td>HNSW</td>
+    <td>Embedded. Excellent for local evaluation harnesses and notebooks.</td>
+  </tr>
+  <tr>
+    <td><strong>Snowflake / BigQuery</strong></td><td><code>VECTOR</code> / vector index</td><td>Proprietary / IVF, TreeAH</td>
+    <td>Warehouse-side. Good for batch similarity, not request-path retrieval.</td>
+  </tr>
+  <tr>
+    <td><strong>Cassandra 5.0</strong></td><td>Vector + SAI</td><td>HNSW (JVector)</td>
+    <td>Distributed, high write throughput.</td>
+  </tr>
+  <tr>
+    <td><strong>MongoDB Atlas</strong></td><td>Atlas Vector Search</td><td>HNSW</td>
+    <td>Document model; vector search is Atlas-only, not in community server.</td>
+  </tr>
+  <tr>
+    <td><strong>Elasticsearch / OpenSearch</strong></td><td><code>dense_vector</code></td><td>HNSW</td>
+    <td>Not an RDBMS, but the incumbent if you already run it for BM25 — hybrid comes free.</td>
+  </tr>
+  <tr>
+    <td><strong>Redis</strong></td><td>RediSearch vector</td><td>FLAT, HNSW</td>
+    <td>In-memory. Good for small hot sets and caching layers.</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">The strategic point, and the answer to "isn't pgvector a toy?"</div>
+"Every major database vendor added a vector type within about two years — Oracle, SQL Server, MariaDB, MySQL, Cassandra, ClickHouse, Snowflake, BigQuery. That tells you the industry concluded vector search is a <em>capability of your existing data platform</em>, not a separate product you bolt on. Purpose-built vector databases still win decisively at scales a single node can't hold — but the 'you need a dedicated vector database' era was narrower than the marketing suggested, and it's narrowing further."
+<p style="margin-top:0.7rem;margin-bottom:0;">Then add the honest half: <em>"pgvector is the most mature of the co-located options — the others are one to three years behind on tooling and community — but on architecture, Oracle's dedicated vector memory pool is a better design than competing with shared_buffers, and SQL Server shipping DiskANN natively is ahead of where pgvector is without extensions."</em> Naming where your choice is <strong>behind</strong> is what makes the rest credible.</p>
+</div>
+
+<div class="caution">
+<div class="label">Version-sensitive</div>
+This table moves fast — every row has shipped or materially changed within about 24 months of writing. Verify against current documentation before quoting a version number or a limit in a design review. The <em>shape</em> of the table is stable; the specifics are not.
+</div>
+
+<h2>12. Postgres Memory Limits — What Actually Caps You</h2>
+
+<p>Day 3 shows that the HNSW index must stay resident or P99 collapses. The natural next question is the one to ask: <strong>how much memory can Postgres actually use?</strong> There are four distinct ceilings, and only one of them is the real one.</p>
+
+<h3>Ceiling 1 — Postgres itself: effectively none</h3>
+
+<p><code>shared_buffers</code> is configured in 8 kB blocks as a signed integer, so the theoretical maximum is around <strong>16 TB</strong>. No one has hit this. Postgres is not the constraint.</p>
+
+<p>But raising <code>shared_buffers</code> is not how you win here, for a reason specific to Postgres's I/O model:</p>
+
+<div class="math-box">
+Postgres uses <em>buffered</em> I/O, not direct I/O — so pages live in <code>shared_buffers</code> <strong>and</strong> the OS page cache.
+</div>
+
+<p>Set <code>shared_buffers</code> to 80% of RAM and you get <em>double buffering</em>: the same index pages cached twice, wasting the memory you were trying to use. The conventional 25% guidance exists for this reason. For pgvector the practical consequence is liberating:</p>
+
+<div class="verdict">
+<div class="label">What actually matters for vector workloads</div>
+<strong>Total machine RAM, not <code>shared_buffers</code>.</strong> A cached HNSW page is fast whether it is cached by Postgres or by the OS. So size the <em>instance</em> against index size (Day 3's model), leave <code>shared_buffers</code> near conventional values, and let the OS page cache do the rest. Tuning <code>shared_buffers</code> upward is the wrong lever — and knowing that is worth more than memorising a number.
+</div>
+
+<h3>Ceiling 2 — Per-connection memory, which multiplies</h3>
+
+<table class="matrix-table">
+  <tr><th>Setting</th><th>Scope</th><th>Risk</th></tr>
+  <tr><td><code>work_mem</code></td><td>Per sort/hash <em>node</em>, per connection</td><td>The classic outage: a complex plan uses it several times over, × hundreds of connections. Budget conservatively and raise per-session.</td></tr>
+  <tr><td><code>maintenance_work_mem</code></td><td>Per index build / VACUUM</td><td>Too small and an HNSW build spills to disk and takes roughly 5× longer. Set it high <em>per session</em> for builds, never globally.</td></tr>
+  <tr><td>Backend overhead</td><td>Per connection (a real OS process)</td><td>Why the Day 3 RAM cliff compounds — 40× latency means 40× concurrent backends. PgBouncer.</td></tr>
+</table>
+
+<h3>Ceiling 3 — The instance you can actually buy</h3>
+
+<p>This is the ceiling that binds in practice, and it is economic rather than technical. Managed Postgres memory-optimised instances top out in the region of <strong>1–4 TB</strong> of RAM (exact ceilings differ by provider, engine and region — check current instance classes rather than trusting a remembered number). Self-managed bare metal goes further, into the tens of TB, at prices that stop being reasonable well before the hardware stops existing.</p>
+
+<p>Against Day 3's model — ~7 GB of index per million vectors at 1536 dims — a 1 TB instance holds roughly <strong>80M vectors</strong> before the ladder, and several hundred million after <code>halfvec</code> + MRL truncation. That is the real single-node frontier.</p>
+
+<h3>Ceiling 4 — The one that surprises people: pgvector's index dimension limit</h3>
+
+<div class="caution">
+<div class="label">This one bites in practice, and it is not a memory limit at all</div>
+An index entry must fit inside a single 8 kB Postgres page. That imposes hard dimension caps on <em>indexes</em> that are much lower than the caps on the <em>types</em>:
+<table class="matrix-table" style="margin-top:0.8rem;margin-bottom:0.8rem;">
+  <tr><th>Type</th><th>Max dims (column)</th><th>Max dims (HNSW / IVFFlat index)</th></tr>
+  <tr><td><code>vector</code> (float32)</td><td>16,000</td><td class="no"><strong>2,000</strong></td></tr>
+  <tr><td><code>halfvec</code> (fp16)</td><td>16,000</td><td class="partial"><strong>4,000</strong></td></tr>
+  <tr><td><code>bit</code> (binary)</td><td>—</td><td class="yes"><strong>64,000</strong></td></tr>
+</table>
+Notice the arithmetic: 2,000 × 4 bytes = 8,000 B, and 4,000 × 2 bytes = 8,000 B. Both caps are the same 8 kB page, seen twice.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>The practical consequence:</strong> <code>text-embedding-3-large</code> is 3,072 dimensions. You <em>cannot</em> build an HNSW index on a <code>vector(3072)</code> column — the column works, inserts work, and then <code>CREATE INDEX</code> fails. Your options are <code>halfvec(3072)</code> (3,072 ≤ 4,000, so indexable, and you get Day 3's 1.9× memory win for free) or MRL-truncate to 1,536 or 2,000 dimensions.</p>
+</div>
+
+<div class="verdict">
+<div class="label">Why this is a good thing to know cold</div>
+It is a concrete, checkable limit that catches teams <em>after</em> they have embedded a corpus with the larger model. It also reframes <code>halfvec</code>: Day 3 sold it as a memory optimisation, but at 3,072 dimensions it is not an optimisation at all — <strong>it is the only way to have an index</strong>. Two independent reasons for the same decision is a strong position to argue from.
+</div>
+
+<h2>13. Distributed Vector Search — How Sharding Actually Works</h2>
+
+<p>Day 3's conclusion was that replication scales QPS but not corpus size, because every replica holds the whole index — so sharding is the only structural answer to volume. That raises the question this section answers: <strong>how do you shard an ANN index at all?</strong></p>
+
+<p>It is harder than sharding relational data, for one reason:</p>
+
+<div class="math-box">
+Nearest-neighbour search has no partition key. The answer can be on <em>any</em> shard.
+</div>
+
+<p>A relational query with <code>WHERE customer_id = 42</code> routes to one shard. "Find the 10 most similar vectors" has no such handle — similarity is a property of the whole space. There are exactly three strategies, and each trades something different away.</p>
+
+<h3>Strategy A — Random shard + scatter-gather (the common one)</h3>
+
+<p>Distribute vectors arbitrarily. Every query goes to <em>every</em> shard; each returns its local top-k; a coordinator merges. Used by Milvus, Elasticsearch, OpenSearch, Vespa.</p>
+
+<ul>
+  <li><strong>Recall:</strong> preserved. The true top-k is a subset of the union of per-shard top-k.</li>
+  <li><strong>Volume:</strong> scales linearly. This is the point.</li>
+  <li><strong>QPS:</strong> <em>does not</em> scale with shards — every query costs one search on every shard. Adding shards raises capacity but not per-query throughput.</li>
+  <li><strong>Latency:</strong> you wait for the slowest shard on every single query.</li>
+</ul>
+
+<p>That last point deserves a diagram, because it is the failure mode people are least prepared for:</p>
+
+<svg viewBox="0 0 700 275" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="275" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">SCATTER-GATHER: YOUR P99 IS THE SLOWEST SHARD, EVERY TIME</text>
+
+  <!-- coordinator -->
+  <rect x="24" y="110" width="96" height="40" rx="6" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+  <text x="72" y="135" font-family="-apple-system,sans-serif" font-size="10.5" fill="#1a1a1a" text-anchor="middle">coordinator</text>
+
+  <!-- shards + timing bars -->
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <text x="150" y="52" fill="#666">shard 1</text>
+    <rect x="205" y="41" height="13" rx="3" fill="#2e6b3e" width="0"><animate attributeName="width" from="0" to="86" dur="0.9s" fill="freeze" begin="0.3s"/></rect>
+    <text x="299" y="52" fill="#2e6b3e" font-weight="700" opacity="0">3 ms<animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="1.2s"/></text>
+
+    <text x="150" y="80" fill="#666">shard 2</text>
+    <rect x="205" y="69" height="13" rx="3" fill="#2e6b3e" width="0"><animate attributeName="width" from="0" to="115" dur="1.1s" fill="freeze" begin="0.3s"/></rect>
+    <text x="328" y="80" fill="#2e6b3e" font-weight="700" opacity="0">4 ms<animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="1.4s"/></text>
+
+    <text x="150" y="108" fill="#666">shard 3</text>
+    <rect x="205" y="97" height="13" rx="3" fill="#2e6b3e" width="0"><animate attributeName="width" from="0" to="72" dur="0.8s" fill="freeze" begin="0.3s"/></rect>
+    <text x="285" y="108" fill="#2e6b3e" font-weight="700" opacity="0">2.5 ms<animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="1.1s"/></text>
+
+    <text x="150" y="136" fill="#666">shard 4</text>
+    <rect x="205" y="125" height="13" rx="3" fill="#2e6b3e" width="0"><animate attributeName="width" from="0" to="100" dur="1s" fill="freeze" begin="0.3s"/></rect>
+    <text x="313" y="136" fill="#2e6b3e" font-weight="700" opacity="0">3.5 ms<animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="1.3s"/></text>
+
+    <!-- the straggler -->
+    <text x="150" y="164" fill="#c5221f" font-weight="700">shard 5</text>
+    <rect x="205" y="153" height="13" rx="3" fill="#c5221f" width="0"><animate attributeName="width" from="0" to="345" dur="2.4s" fill="freeze" begin="0.3s"/></rect>
+    <text x="558" y="164" fill="#c5221f" font-weight="700" opacity="0">12 ms &#8212; GC pause / cold page<animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="2.7s"/></text>
+
+    <text x="150" y="192" fill="#666">shard 6</text>
+    <rect x="205" y="181" height="13" rx="3" fill="#2e6b3e" width="0"><animate attributeName="width" from="0" to="80" dur="0.85s" fill="freeze" begin="0.3s"/></rect>
+    <text x="293" y="192" fill="#2e6b3e" font-weight="700" opacity="0">2.8 ms<animate attributeName="opacity" from="0" to="1" dur="0.2s" fill="freeze" begin="1.15s"/></text>
+  </g>
+
+  <!-- fan-out lines -->
+  <g stroke="#8a8578" stroke-width="1">
+    <line x1="120" y1="125" x2="200" y2="47"/><line x1="120" y1="125" x2="200" y2="75"/>
+    <line x1="120" y1="125" x2="200" y2="103"/><line x1="120" y1="125" x2="200" y2="131"/>
+    <line x1="120" y1="125" x2="200" y2="159"/><line x1="120" y1="125" x2="200" y2="187"/>
+  </g>
+
+  <!-- gather barrier -->
+  <line x1="550" y1="35" x2="550" y2="200" stroke="#a8451f" stroke-width="2" stroke-dasharray="5,4" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.7s"/></line>
+  <text x="556" y="212" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" font-weight="700" opacity="0">merge waits here
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.7s"/></text>
+
+  <text x="24" y="238" font-family="-apple-system,sans-serif" font-size="11" fill="#333">Median shard: <tspan font-weight="700">3 ms</tspan>. Query latency: <tspan font-weight="700" fill="#c5221f">12 ms</tspan> — the max, not the mean.</text>
+  <text x="24" y="256" font-family="-apple-system,sans-serif" font-size="10.5" fill="#666">With S shards you sample the tail S times per query, so your P99 approaches each shard's P99.9. More shards = worse tails.</text>
+</svg>
+
+<div class="caution">
+<div class="label">Tail amplification — the counter-intuitive part</div>
+Each query samples every shard's latency distribution and takes the <em>maximum</em>. With 10 shards, a per-shard P99 of 10 ms means roughly a 1 − 0.99<sup>10</sup> ≈ <strong>10% chance</strong> that at least one shard is in its tail — so your query-level P90 already looks like the shard-level P99. Scaling out to 100 shards makes it a near-certainty on every request.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is Dean &amp; Barroso's "The Tail at Scale," and it is why distributed vector search needs hedged requests, per-shard timeouts with partial results, and hard work on tail latency that a single node simply does not require. <strong>Sharding does not just add capacity — it adds a latency problem you did not previously have.</strong></p>
+</div>
+
+<h3>Strategy B — Semantic sharding (route by vector space region)</h3>
+
+<p>Partition the space itself — coarse centroids, one region per shard — and route each query only to the shards whose regions are near it. This is IVFFlat's idea promoted to a cluster topology (SPANN and similar).</p>
+
+<ul>
+  <li><strong>QPS scales</strong> — each query touches only a few shards.</li>
+  <li><strong>Recall suffers at boundaries</strong> — true neighbours just across a region edge are missed unless you over-probe.</li>
+  <li><strong>Rebalancing is painful</strong> — as data drifts, regions become unbalanced and re-partitioning means moving vectors between nodes.</li>
+</ul>
+
+<h3>Strategy C — Shard on a business key (the one you should want)</h3>
+
+<div class="verdict">
+<div class="label">If your queries always carry a partition key, you avoid the whole problem</div>
+When every query is scoped — <span class="dtag retail">retail</span> <code>storefront_id</code>, <span class="dtag ins">insurance</span> <code>carrier_id</code>, <span class="dtag fin">fintech</span> <code>tenant_id</code> — you can shard on that key. Each query becomes <strong>single-shard</strong>: no scatter, no tail amplification, no recall loss, and QPS scales linearly with nodes. Each shard's index is small enough to stay resident, which also defuses Day 3's RAM cliff.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is why Day 2's multi-tenancy section matters more than it first appears. A tenancy model is <em>also</em> a sharding strategy — and it is the only one that gives you distribution without paying for it in either recall or tail latency. It is available in plain Postgres via partitioning or Citus, and it is exactly the kind of thing 14 years of data modelling prepares you to spot.</p>
+</div>
+
+<h3>Distributed options, by how far you have to move</h3>
+
+<table class="matrix-table">
+  <tr><th>Option</th><th>Distribution model</th><th>Move from pgvector</th></tr>
+  <tr><td><strong>Declarative partitioning</strong></td><td>Partition by tenant/category on one node; per-partition indexes</td><td class="yes">None — still plain Postgres. Try this first.</td></tr>
+  <tr><td><strong>Citus</strong></td><td>Sharded Postgres; works with pgvector. Shard on a business key → Strategy C; otherwise scatter-gather.</td><td class="yes">Extension. Same SQL, same pgvector.</td></tr>
+  <tr><td><strong>AlloyDB / Aurora</strong></td><td>Postgres-compatible managed; AlloyDB adds ScaNN, Aurora offers sharded variants</td><td class="yes">Low — Postgres wire protocol.</td></tr>
+  <tr><td><strong>YugabyteDB / CockroachDB</strong></td><td>Distributed SQL with native vector indexing</td><td class="partial">Postgres-compatible, but operationally a different database.</td></tr>
+  <tr><td><strong>SingleStore / TiDB</strong></td><td>Distributed by design, ANN indexes built in</td><td class="partial">New system, familiar SQL.</td></tr>
+  <tr><td><strong>Milvus / Vespa</strong></td><td>Purpose-built distributed vector/tensor search</td><td class="no">Full migration + permanent sync pipeline.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The escalation ladder, stated as an interview answer</div>
+"Before I'd migrate for volume, I'd try declarative partitioning by tenant — that's still plain Postgres and it makes each query single-shard. If I outgrow one node, Citus shards the same pgvector tables across nodes and keeps my SQL and my transactional writes. Only when there's no usable partition key <em>and</em> the corpus genuinely exceeds what partitioned Postgres can hold would I move to Milvus — and at that point I'm accepting scatter-gather tail amplification and a permanent sync pipeline as the price of the volume."
+</div>
+
+<h2>14. Companion Scripts</h2>
+
+<p>Two runnable artifacts for your own environment — stdlib only, no new dependencies.</p>
+
+<table class="script-table">
+  <tr><th>Script</th><th>What it makes concrete</th></tr>
+  <tr>
+    <td><code>week2/day2/dual_write_drift_sim.py</code></td>
+    <td>Simulates a catalog syncing to an external vector store — CDC lag, transient upsert failures, retries, nightly reconciliation. Reports stale-vector minutes, orphan count, and the fraction of queries that would return an incorrect result. Compare against the pgvector case, where all of those are zero by construction.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day2/vectordb_tco_calc.py</code></td>
+    <td>Four-way TCO model (pgvector / Pinecone serverless / Weaviate Cloud / self-hosted Milvus) across scale tiers, including the engineering cost of the sync pipeline. Every vendor price is an editable constant at the top — treat them as ballparks and refresh from current pricing pages before quoting a number.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week2/day2
+python dual_write_drift_sim.py
+python vectordb_tco_calc.py</div>
+
+<h2>15. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Vector Database Selection Check</h3>
+
+<div class="quiz">
+<div class="q">1. An interviewer says: "Pinecone is fully managed, so it removes operational burden vs pgvector." What is the strongest counter?</div>
+<button data-correct="false">Pinecone has worse recall than pgvector's HNSW at equivalent settings.</button>
+<button data-correct="true">Managed covers their index, not your correctness. Moving vectors out of Postgres creates a dual-write problem — you now own an outbox/CDC pipeline, idempotent upserts, a reconciliation job, and drift alerting. That operational cost appears on no pricing page.</button>
+<button data-correct="false">Pinecone cannot do metadata filtering, so you'd need Postgres anyway.</button>
+<button data-correct="false">Pinecone is more expensive at every scale tier.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. You must serve 400 white-label storefronts with isolated catalogs. Why is "one shared HNSW index + a tenant_id filter" the worst option — for a reason that isn't security?</div>
+<button data-correct="false">Postgres cannot index a tenant_id column alongside a vector column.</button>
+<button data-correct="true">A small tenant inside a huge shared graph is a highly selective filter, so ANN traversal walks large numbers of non-matching neighbours before finding enough candidates. Recall becomes a function of tenant size — small storefronts silently get worse search, and no default dashboard segments recall by tenant.</button>
+<button data-correct="false">Shared indexes cannot be rebuilt without downtime.</button>
+<button data-correct="false">Filters are applied before the ANN search, which always returns exact results and is therefore too slow.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Weaviate can call OpenAI for you at insert time via <code>text2vec-openai</code>. Why would you, as a data platform architect, decline that feature?</div>
+<button data-correct="false">Because the module produces lower-quality embeddings than calling the API directly.</button>
+<button data-correct="true">It moves embedding generation — a batch, versioned, backfillable, cost-controlled pipeline concern — into a database request path you don't control. Model version changes should be a scheduled re-embedding job with your own retry and cost semantics, not an implicit per-insert API call.</button>
+<button data-correct="false">Because Weaviate modules only support open-source models.</button>
+<button data-correct="false">Because it violates the transactional guarantee of the insert.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Milvus separates query nodes, data nodes, and index nodes. Which pgvector operational pain does that specifically eliminate?</div>
+<button data-correct="true">Index build competing with live query traffic for the same CPU and RAM. In Postgres, a CREATE INDEX / REINDEX runs on the same machine serving searches; Milvus builds on dedicated index nodes.</button>
+<button data-correct="false">The need to choose between IVFFlat and HNSW.</button>
+<button data-correct="false">The requirement to keep metadata in sync with vectors.</button>
+<button data-correct="false">Eventual consistency between writes and reads.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Day 1 ended on the pre-filter dilemma (<code>WHERE category = 'boots'</code> + ANN). What has changed that you must account for before claiming this forces a move off pgvector?</div>
+<button data-correct="false">Nothing — pgvector still has no answer, so filtered search always requires Qdrant or Weaviate.</button>
+<button data-correct="true">pgvector 0.8 added iterative index scans, which re-probe the index when a filter eliminates too many candidates instead of returning a short result set. Filtered ANN alone is no longer sufficient justification — though highly selective filters at high QPS still favour a filter-aware graph like Qdrant's.</button>
+<button data-correct="false">Postgres now pushes filters into the HNSW graph construction itself, matching Qdrant exactly.</button>
+<button data-correct="false">pgvector dropped support for filtered queries entirely in 0.8.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Which single requirement, if real, is the cleanest justification for leaving pgvector in this retail scenario?</div>
+<button data-correct="false">Needing BM25 + dense hybrid search for exact SKU matching.</button>
+<button data-correct="false">Needing sub-100ms P99 latency at 500 QPS on 4M vectors.</button>
+<button data-correct="true">Hundreds of tenants with heavily skewed traffic needing per-tenant index isolation and hot/cold tiering — Postgres's answers (table-per-tenant, RLS) don't offer offload-to-object-storage for dormant tenants.</button>
+<button data-correct="false">Needing to store 1536-dimension vectors.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. You embedded your corpus with <code>text-embedding-3-large</code> (3,072 dims) into a <code>vector(3072)</code> column. Inserts work fine. Then <code>CREATE INDEX ... USING hnsw</code> fails. Why?</div>
+<button data-correct="false">HNSW does not support more than 2,000 rows per index page.</button>
+<button data-correct="true">A pgvector index entry must fit in one 8 kB Postgres page, capping indexes at 2,000 dims for <code>vector</code> (2,000 × 4 B = 8,000 B). The <em>column</em> allows 16,000 dims, so inserts succeed and only the index fails. Fix: use <code>halfvec(3072)</code> — indexable to 4,000 dims (4,000 × 2 B = 8,000 B) — or MRL-truncate to ≤2,000.</button>
+<button data-correct="false">OpenAI's 3,072-dim vectors are not unit-normalised, so cosine indexes reject them.</button>
+<button data-correct="false">You must set <code>maintenance_work_mem</code> above 8 GB before indexing 3,072-dim vectors.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">8. To get more of your HNSW index cached, should you raise <code>shared_buffers</code> to 80% of RAM?</div>
+<button data-correct="false">Yes — <code>shared_buffers</code> is the only cache Postgres can read an index page from.</button>
+<button data-correct="true">No. Postgres uses buffered I/O, so pages are cached in <code>shared_buffers</code> <em>and</em> the OS page cache — a huge setting causes double buffering and wastes the memory you were trying to use. What matters for vector workloads is total machine RAM; a page cached by the OS is just as fast. Size the instance, leave <code>shared_buffers</code> conventional.</button>
+<button data-correct="false">Yes, but only with huge pages enabled, which eliminates double buffering.</button>
+<button data-correct="false">It makes no difference — pgvector indexes bypass the buffer manager entirely.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">9. You shard a vector index across 10 nodes with random assignment and scatter-gather. Per-shard P99 is 10 ms. What happens to query latency?</div>
+<button data-correct="false">It improves roughly 10× — each shard searches a tenth of the data.</button>
+<button data-correct="true">It gets worse at the tail. Every query waits for the <em>slowest</em> shard, so each request samples the latency distribution 10 times and takes the maximum — roughly a 10% chance some shard is in its tail. Your query-level P90 starts to look like the shard-level P99. Sharding adds capacity and a latency problem you didn't have before.</button>
+<button data-correct="false">It stays identical, since shards are searched in parallel.</button>
+<button data-correct="false">Recall drops but latency is unaffected.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">10. Why is sharding on <code>tenant_id</code> / <code>carrier_id</code> strictly better than random sharding when your queries always carry that key?</div>
+<button data-correct="true">Every query becomes single-shard: no scatter-gather, so no tail amplification, no recall loss at region boundaries, and QPS scales linearly with nodes. Each shard's index is also small enough to stay resident, which defuses the RAM cliff too. The tenancy model <em>is</em> the sharding strategy.</button>
+<button data-correct="false">Because HNSW graphs cannot be built on randomly-assigned data.</button>
+<button data-correct="false">Because it lets you skip the coordinator node entirely, halving network hops.</button>
+<button data-correct="false">It isn't — random sharding always gives better load balance and equal recall.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">11. An interviewer says "pgvector is a toy — serious systems use a real vector database." What is the strongest, most honest response?</div>
+<button data-correct="false">Benchmarks show pgvector outperforms Milvus and Pinecone at every scale.</button>
+<button data-correct="true">Point out that Oracle, SQL Server, MariaDB, MySQL, Cassandra, ClickHouse, Snowflake and BigQuery all shipped native vector types within about two years — the industry treats vector search as a datatype, not a product category. Then concede where pgvector is genuinely behind: Oracle's dedicated vector memory pool is a better design than competing with shared_buffers, and SQL Server ships DiskANN natively where pgvector needs an extension.</button>
+<button data-correct="false">Argue that vector databases are a marketing invention with no legitimate use case.</button>
+<button data-correct="false">Note that pgvector is the oldest vector implementation, so it is the most battle-tested.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want to go deeper on the outbox/CDC design for keeping an external vector store in sync, on segmenting recall by tenant size, or on setting up Citus sharding for a pgvector table? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day1/0007-pgvector-fundamentals.html">&larr; Day 1: pgvector Fundamentals</a>
+<a href="../day3/0009-pgvector-scale-limits.html">Day 3: Scale Tradeoffs &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

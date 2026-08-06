@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0010 — Hybrid Search in Production: Building It Inside Postgres</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .qclass { background:#fff; border:1px solid #e2ded8; border-radius:9px; padding:1rem 1.3rem; margin:1rem 0; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
+  .qclass .q { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.9rem; color:#8c2a00; font-weight:600; }
+  .qclass .verdict-line { font-size:0.92rem; color:#555; margin-top:0.4rem; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains ul { margin:0 0 0 1rem; }
+  .domains li { margin-bottom:0.3rem; font-size:0.87rem; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>Hybrid Search in Production — Building It Inside Postgres</h1>
+<p class="subtitle">Week 2, Day 4 — query routing, fusion, and the evaluation trap that hides regressions</p>
+
+<p>Week 1 Day 4 covered hybrid search as <em>theory</em>: the BM25 formula, why RRF is scale-invariant, k=60. Today is the production build — how you actually implement it in Postgres without a second search engine, how you decide <em>per query</em> how much lexical weight to apply, and the evaluation mistake that makes a hybrid rollout look successful while it quietly breaks your best-converting traffic.</p>
+
+<div class="verdict">
+<div class="label">Day 2 callback</div>
+Hybrid is the one Day-2 capability where pgvector's "you build it yourself" is genuinely fine — and where Postgres has a structural advantage the managed vector DBs lack. Your lexical index can be a <strong>generated column</strong>, which means the keyword index and the vector are updated by the same transaction that updates the product. Weaviate's built-in hybrid still lives on the far side of a sync pipeline.
+</div>
+
+<h2>1. Two Gaps, Not One</h2>
+
+<p>Most explanations only cover half of this. There are two failure directions, and hybrid exists because each retriever covers the other's blind spot.</p>
+
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="250" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">THE TWO GAPS — WHY NEITHER RETRIEVER IS SUFFICIENT</text>
+
+  <!-- Semantic gap (BM25 fails) -->
+  <rect x="28" y="48" width="310" height="82" rx="8" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+  <text x="42" y="70" font-family="-apple-system,sans-serif" font-size="11.5" fill="#1f5f8b" font-weight="700">SEMANTIC GAP — BM25 fails</text>
+  <text x="42" y="90" font-family="SFMono-Regular,monospace" font-size="10" fill="#8c2a00">query: "something warm for hiking"</text>
+  <text x="42" y="106" font-family="SFMono-Regular,monospace" font-size="10" fill="#333">doc:   "insulated trail jacket, fleece-lined"</text>
+  <text x="42" y="122" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f" font-weight="700">zero token overlap → BM25 score = 0</text>
+
+  <!-- Lexical gap (dense fails) -->
+  <rect x="362" y="48" width="310" height="82" rx="8" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+  <text x="376" y="70" font-family="-apple-system,sans-serif" font-size="11.5" fill="#a8451f" font-weight="700">LEXICAL GAP — dense vectors fail</text>
+  <text x="376" y="90" font-family="SFMono-Regular,monospace" font-size="10" fill="#8c2a00">query: "SKU-88213"</text>
+  <text x="376" y="106" font-family="SFMono-Regular,monospace" font-size="10" fill="#333">doc:   "SKU-88214" (a different product)</text>
+  <text x="376" y="122" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f" font-weight="700">near-identical embeddings → wrong item ranks #1</text>
+
+  <!-- middle explanation -->
+  <rect x="28" y="146" width="644" height="82" rx="8" fill="#eef3f7" stroke="#c9d9e5" stroke-width="1.5"/>
+  <text x="42" y="168" font-family="-apple-system,sans-serif" font-size="11" fill="#1a4971" font-weight="700">Why the lexical gap is worse than people expect</text>
+  <text x="42" y="188" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">An embedding is a smooth function of its input. Strings that LOOK alike map to points that ARE close —</text>
+  <text x="42" y="204" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">but identifier similarity carries no meaning. Dense retrieval has no mechanism for exact match; it only</text>
+  <text x="42" y="220" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">has "close." For an identifier, "close" is precisely the wrong answer, and it is confidently ranked #1.</text>
+</svg>
+
+<p>That last point is the one worth memorising. People say "dense search is bad at exact match," which sounds like a recall problem. It is worse than that — it is a <strong>confident precision failure</strong>. The model returns a neighbouring SKU with a high similarity score, so nothing in your monitoring looks wrong. A zero-result page is a visible failure; a plausible wrong product at rank 1 is an invisible one.</p>
+
+<h2>2. The Retail Query Taxonomy</h2>
+
+<p>Blanket hybrid with a fixed weight is leaving money on the table, because retail query traffic is not homogeneous. Five classes, each wanting a different treatment:</p>
+
+<div class="qclass">
+<div class="q">"SKU-88213" · "MFG#4471-B" · "0714532198"</div>
+<div class="verdict-line"><strong>Exact identifier</strong> (~5–10% of traffic, very high intent and conversion). Wants <em>exact lookup</em>, not ranking. Dense contribution should be near zero.</div>
+</div>
+
+<div class="qclass">
+<div class="q">"Salomon Quest 4 GTX" · "Dyson V15"</div>
+<div class="verdict-line"><strong>Brand + model</strong> (~20%). Rare, high-signal tokens. Lexical-dominant, but dense helps with variants and misspellings.</div>
+</div>
+
+<div class="qclass">
+<div class="q">"waterproof hiking boots size 11 wide"</div>
+<div class="verdict-line"><strong>Attribute-constrained</strong> (~30%). Needs structured filters extracted from the query, plus balanced retrieval on the remainder.</div>
+</div>
+
+<div class="qclass">
+<div class="q">"something warm for a rainy trek in Scotland"</div>
+<div class="verdict-line"><strong>Natural language / intent</strong> (~25%). Dense-dominant. BM25 contributes little and can actively hurt by matching "Scotland" in unrelated descriptions.</div>
+</div>
+
+<div class="qclass">
+<div class="q">"watrproof hikking bots"</div>
+<div class="verdict-line"><strong>Misspelled</strong> (~10%). Dense is robust here (subword tokenisation); BM25 fails outright unless you add trigram fuzzy matching.</div>
+</div>
+
+<h3>The taxonomy transfers — the identifiers and the stakes don't</h3>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail identifiers</div>
+    <p class="kv">SKU-88213 · MFG#4471-B · UPC 0714532198</p>
+    <p>~5–10% of traffic, ~4× conversion.</p>
+    <p><strong>Getting it wrong:</strong> lost sale.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance identifiers</div>
+    <p class="kv">ICC21-TL-NY · Form 10-R · policy A0473321 · ICD-10 E11.9</p>
+    <p>Form numbers are the dominant lookup for underwriters and agents. Note the extra class retail has none of: <strong>medical codes</strong>, where ICD-10 <em>E11.9</em> and <em>E11.29</em> are different conditions with different underwriting outcomes.</p>
+    <p><strong>Getting it wrong:</strong> a compliance finding.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech identifiers</div>
+    <p class="kv">merchant strings · account · txn ID · MCC 5812</p>
+    <p>Merchant normalisation is the canonical hybrid problem: <code>AMZN MKTP US*2H4TR</code> must resolve to Amazon, and lexical alone cannot while dense alone confuses similar merchants.</p>
+    <p><strong>Getting it wrong:</strong> a mis-categorised transaction, or a missed fraud match.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The medical-code case is the sharpest argument for lexical retrieval you will find</div>
+Dense embeddings place <code>E11.9</code> (type 2 diabetes without complications) and <code>E11.29</code> (type 2 diabetes with kidney complications) almost on top of each other — the strings are nearly identical and so are the descriptions. Those two codes can mean <em>accept at standard rates</em> versus <em>decline</em>.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is the lexical gap at its most consequential: the failure is confident, plausible, and silently wrong. In insurance, medical and form codes must go through exact lookup — never fusion, never nearest-neighbour. If you take one thing from Day 4 into an insurtech interview, take this example.</p>
+</div>
+
+<div class="caution">
+<div class="label">Why this taxonomy is the whole lesson</div>
+A single global <code>alpha</code> optimises the <em>average</em> query. But the exact-identifier class is 5–10% of traffic and often 3–5× the conversion rate of the average query — it is the customer who already knows exactly what they want. Tuning for the mean systematically underserves your most valuable segment. This is the argument for a <strong>query router</strong>, and it is the kind of point that separates a search architect from someone who wired up a vector index.
+</div>
+
+<h2>3. Building the Lexical Side Inside Postgres</h2>
+
+<p>You do not need Elasticsearch. You need a <code>tsvector</code> column, a GIN index, and awareness of one significant limitation.</p>
+
+<div class="code-inline">-- The generated column is the key move: Postgres maintains the lexical index
+-- in the SAME transaction as the product update. No sync pipeline, no drift.
+ALTER TABLE products
+  ADD COLUMN tsv tsvector
+  GENERATED ALWAYS AS (
+      setweight(to_tsvector('english', coalesce(name, '')),        'A') ||
+      setweight(to_tsvector('english', coalesce(brand, '')),       'B') ||
+      setweight(to_tsvector('english', coalesce(description, '')), 'C')
+  ) STORED;
+
+CREATE INDEX products_tsv_gin ON products USING GIN (tsv);
+
+-- Identifiers get their OWN path — never rely on FTS for exact lookup.
+-- 'english' config lowercases and splits SKU-88213 into 'sku' + '88213'.
+ALTER TABLE products ADD COLUMN sku_norm TEXT
+  GENERATED ALWAYS AS (upper(regexp_replace(sku, '[^A-Za-z0-9]', '', 'g'))) STORED;
+CREATE INDEX products_sku_norm ON products (sku_norm);
+
+-- Trigram index for fuzzy/misspelled identifier and brand matching.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX products_name_trgm ON products USING GIN (name gin_trgm_ops);</div>
+
+<p>Two things to notice, both worth saying out loud in an interview:</p>
+
+<ul>
+  <li><code>to_tsvector('english', ...)</code> — the two-argument form with an explicit config is <code>IMMUTABLE</code>, which is what makes it legal in a generated column. The one-argument form depends on <code>default_text_search_config</code>, is only <code>STABLE</code>, and Postgres will reject it. This trips up almost everyone the first time.</li>
+  <li><code>setweight</code> gives you field-level importance (name &gt; brand &gt; description) — the poor man's BM25F.</li>
+</ul>
+
+<div class="caution">
+<div class="label">The limitation that matters: Postgres FTS ranking is not BM25</div>
+<code>ts_rank_cd</code> scores on term frequency and cover density (how tightly the query terms cluster in the document). It has <strong>no IDF term</strong> — no corpus-wide statistics at all. That means a rare, highly discriminative token is weighted the same as a common one.
+<p style="margin-top:0.7rem;margin-bottom:0;">For retail this is exactly backwards: the whole value of the lexical retriever is that rare tokens like a model number are decisive. Options, in order of cost: (a) accept it — RRF only uses <em>rank</em>, so the absolute score mattering less softens the blow; (b) hand-weight rare terms using your own document-frequency table; (c) install <strong>ParadeDB <code>pg_search</code></strong>, which embeds a Tantivy index in Postgres and gives you real BM25 with IDF.</p>
+</div>
+
+<h2>4. The Hybrid Query</h2>
+
+<p>Two CTEs, each producing a ranked list, fused by RRF. Note that <code>k</code> and the per-retriever weights are parameters — that is where the router plugs in.</p>
+
+<div class="code-inline">-- Hybrid retrieval with weighted Reciprocal Rank Fusion.
+-- $1 = query text, $2 = query embedding, $3 = w_lexical, $4 = w_dense
+WITH lexical AS (
+    SELECT id,
+           ROW_NUMBER() OVER (ORDER BY ts_rank_cd(tsv, websearch_to_tsquery('english', $1)) DESC) AS rank
+    FROM products
+    WHERE tsv @@ websearch_to_tsquery('english', $1)
+    LIMIT 100
+),
+dense AS (
+    SELECT id,
+           ROW_NUMBER() OVER (ORDER BY embedding &lt;=&gt; $2) AS rank
+    FROM products
+    ORDER BY embedding &lt;=&gt; $2
+    LIMIT 100
+)
+SELECT p.id, p.sku, p.name,
+       COALESCE($3 / (60 + l.rank), 0) +
+       COALESCE($4 / (60 + d.rank), 0) AS rrf_score
+FROM products p
+LEFT JOIN lexical l ON l.id = p.id
+LEFT JOIN dense   d ON d.id = p.id
+WHERE l.id IS NOT NULL OR d.id IS NOT NULL
+ORDER BY rrf_score DESC
+LIMIT 10;</div>
+
+<details>
+<summary>Why over-fetch 100 per retriever when you only return 10?</summary>
+<div class="details-body">
+<p>RRF can only fuse what each retriever surfaced. If lexical returns 10 and dense returns 10, a document that is rank 12 in both — a strong consensus candidate — never enters the fusion at all.</p>
+<p>The rule: retrieve <strong>~10× your final k</strong> from each arm. The cost is small (both indexes are already warm; you are paying for a longer result list, not another traversal) and the recall gain at the fusion stage is significant. If you later add a cross-encoder reranker, over-fetch further still — the reranker is the component that turns a wide, noisy candidate set into precision.</p>
+</div>
+</details>
+
+<h2>5. Fusion: RRF vs Weighted Score Normalisation</h2>
+
+<table class="matrix-table">
+  <tr><th></th><th>RRF (rank-based)</th><th>Normalised score blend</th></tr>
+  <tr><td><strong>Input</strong></td><td>Rank position only</td><td>Actual scores, min-max or z-normalised per arm</td></tr>
+  <tr><td><strong>Scale-invariant?</strong></td><td>Yes — the Week 1 Day 4 argument</td><td>No — needs normalisation, which is distribution-sensitive</td></tr>
+  <tr><td><strong>Preserves confidence?</strong></td><td><strong>No</strong> — rank 1 by a landslide and rank 1 by a hair are identical</td><td>Yes — a dominant match stays dominant</td></tr>
+  <tr><td><strong>Stability</strong></td><td>Very stable; k=60 works almost everywhere</td><td>Sensitive to outliers and to per-query score ranges</td></tr>
+  <tr><td><strong>Best for</strong></td><td>Default. Heterogeneous retrievers, no tuning budget</td><td>When one retriever is <em>confidently</em> right — e.g. exact identifier hits</td></tr>
+</table>
+
+<p>The practical resolution: <strong>use RRF as the default, but bypass fusion entirely for the exact-identifier class.</strong> If <code>sku_norm</code> matches exactly, that is not a ranking signal to be blended — it is the answer. Blending it with dense results can only make it worse.</p>
+
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="290" rx="10" fill="#1e1e2e" stroke="#333"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6c7086" letter-spacing="1" font-weight="600">PRODUCTION HYBRID PIPELINE — ROUTED, NOT UNIFORM</text>
+
+  <!-- query -->
+  <rect x="28" y="46" width="120" height="36" rx="6" fill="#2a2a3c" stroke="#fab387" stroke-width="1.5"/>
+  <text x="88" y="69" font-family="-apple-system,sans-serif" font-size="11" fill="#fab387" text-anchor="middle">query</text>
+
+  <line x1="148" y1="64" x2="185" y2="64" stroke="#6c7086" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- router -->
+  <rect x="188" y="42" width="130" height="44" rx="6" fill="#2a2a3c" stroke="#cba6f7" stroke-width="1.5"/>
+  <text x="253" y="60" font-family="-apple-system,sans-serif" font-size="11" fill="#cba6f7" text-anchor="middle" font-weight="700">CLASSIFIER</text>
+  <text x="253" y="76" font-family="-apple-system,sans-serif" font-size="9" fill="#a6adc8" text-anchor="middle">regex + heuristics</text>
+
+  <!-- branch: exact -->
+  <line x1="318" y1="55" x2="380" y2="42" stroke="#a6e3a1" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="384" y="24" width="288" height="38" rx="6" fill="#2a2a3c" stroke="#a6e3a1" stroke-width="1.5"/>
+  <text x="396" y="40" font-family="-apple-system,sans-serif" font-size="10" fill="#a6e3a1" font-weight="700">EXACT IDENTIFIER → btree on sku_norm</text>
+  <text x="396" y="54" font-family="-apple-system,sans-serif" font-size="9" fill="#a6adc8">short-circuit: return the row. No fusion.</text>
+
+  <!-- branch: hybrid -->
+  <line x1="318" y1="72" x2="380" y2="95" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- two arms -->
+  <rect x="384" y="78" width="136" height="40" rx="6" fill="#2a2a3c" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="452" y="94" font-family="-apple-system,sans-serif" font-size="10" fill="#89b4fa" text-anchor="middle" font-weight="700">LEXICAL</text>
+  <text x="452" y="109" font-family="-apple-system,sans-serif" font-size="9" fill="#a6adc8" text-anchor="middle">GIN / tsvector, top-100</text>
+
+  <rect x="536" y="78" width="136" height="40" rx="6" fill="#2a2a3c" stroke="#f9e2af" stroke-width="1.5"/>
+  <text x="604" y="94" font-family="-apple-system,sans-serif" font-size="10" fill="#f9e2af" text-anchor="middle" font-weight="700">DENSE</text>
+  <text x="604" y="109" font-family="-apple-system,sans-serif" font-size="9" fill="#a6adc8" text-anchor="middle">HNSW, top-100</text>
+
+  <line x1="452" y1="118" x2="490" y2="140" stroke="#6c7086" stroke-width="1.5"/>
+  <line x1="604" y1="118" x2="566" y2="140" stroke="#6c7086" stroke-width="1.5"/>
+
+  <!-- fusion -->
+  <rect x="440" y="142" width="176" height="40" rx="6" fill="#2a2a3c" stroke="#94e2d5" stroke-width="1.5"/>
+  <text x="528" y="158" font-family="-apple-system,sans-serif" font-size="10" fill="#94e2d5" text-anchor="middle" font-weight="700">WEIGHTED RRF</text>
+  <text x="528" y="173" font-family="-apple-system,sans-serif" font-size="9" fill="#a6adc8" text-anchor="middle">weights set by the classifier</text>
+
+  <line x1="528" y1="182" x2="528" y2="202" stroke="#6c7086" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- rerank -->
+  <rect x="440" y="204" width="176" height="40" rx="6" fill="#2a2a3c" stroke="#f38ba8" stroke-width="1.5"/>
+  <text x="528" y="220" font-family="-apple-system,sans-serif" font-size="10" fill="#f38ba8" text-anchor="middle" font-weight="700">CROSS-ENCODER RERANK</text>
+  <text x="528" y="235" font-family="-apple-system,sans-serif" font-size="9" fill="#a6adc8" text-anchor="middle">optional 3rd stage, top-50 → top-10</text>
+
+  <text x="28" y="215" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086">The classifier is cheap —</text>
+  <text x="28" y="230" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086">regex and token statistics,</text>
+  <text x="28" y="245" font-family="-apple-system,sans-serif" font-size="10" fill="#6c7086">microseconds, no model call.</text>
+  <text x="28" y="266" font-family="-apple-system,sans-serif" font-size="10" fill="#f9e2af">Start there. Only reach for an</text>
+  <text x="28" y="281" font-family="-apple-system,sans-serif" font-size="10" fill="#f9e2af">LLM classifier if it plateaus.</text>
+
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#6c7086"/></marker></defs>
+</svg>
+
+<h2>6. The Evaluation Trap</h2>
+
+<p>This is the section to remember. You roll out hybrid, you measure nDCG@10 over a held-out query set, and it improves from 0.61 to 0.66. You ship it. Three weeks later, revenue from search-originated sessions is flat or down.</p>
+
+<p>What happened: <strong>aggregate metrics average over query classes with wildly different sizes and values.</strong></p>
+
+<table class="matrix-table">
+  <tr><th>Query class</th><th>% of traffic</th><th>nDCG@10 before</th><th>after</th><th>Δ</th><th>Conversion index</th></tr>
+  <tr><td>Natural language</td><td>25%</td><td>0.58</td><td>0.71</td><td style="color:#137333;font-weight:700">+0.13</td><td>1.0×</td></tr>
+  <tr><td>Attribute-constrained</td><td>30%</td><td>0.62</td><td>0.70</td><td style="color:#137333;font-weight:700">+0.08</td><td>1.4×</td></tr>
+  <tr><td>Misspelled</td><td>10%</td><td>0.44</td><td>0.63</td><td style="color:#137333;font-weight:700">+0.19</td><td>0.8×</td></tr>
+  <tr><td>Brand + model</td><td>27%</td><td>0.73</td><td>0.70</td><td style="color:#c5221f;font-weight:700">−0.03</td><td>2.1×</td></tr>
+  <tr><td><strong>Exact identifier</strong></td><td><strong>8%</strong></td><td><strong>0.94</strong></td><td><strong>0.71</strong></td><td style="color:#c5221f;font-weight:700"><strong>−0.23</strong></td><td><strong>4.3×</strong></td></tr>
+  <tr><td colspan="2"><strong>Weighted aggregate</strong></td><td><strong>0.647</strong></td><td><strong>0.696</strong></td><td style="color:#137333;font-weight:700"><strong>+0.049</strong></td><td>—</td></tr>
+</table>
+
+<p>The aggregate went up. The exact-identifier class — 8% of queries, converting at 4.3× the baseline — <em>collapsed</em>, because blending dense results into a query that had a perfect exact match diluted rank 1. The revenue-weighted outcome is negative while the headline metric is positive.</p>
+
+<div class="verdict">
+<div class="label">The rule</div>
+Never evaluate retrieval on an aggregate alone. Segment by query class, and weight by <strong>business value per class</strong>, not by traffic share. A change that improves the mean while regressing your highest-intent segment is a bad change wearing a good metric. The companion script reproduces this exact scenario numerically.
+</div>
+
+<h2>7. Operating Two Indexes</h2>
+
+<table class="matrix-table">
+  <tr><th>Concern</th><th>How it behaves in Postgres</th></tr>
+  <tr><td>Keeping lexical in sync with the row</td><td><strong>Free</strong> — generated column, same transaction. This is the Day 2 dual-write advantage applied to search.</td></tr>
+  <tr><td>Index size</td><td>GIN on tsvector is small relative to HNSW — typically single-digit % of the vector index. Not a capacity concern.</td></tr>
+  <tr><td>GIN write amplification</td><td>Real. GIN uses a pending list (<code>fastupdate</code>); bulk loads can stall on cleanup. Tune <code>gin_pending_list_limit</code> or disable fastupdate for write-heavy tables.</td></tr>
+  <tr><td>Query planning</td><td>Two CTEs with LIMITs are planner-friendly, but verify with <code>EXPLAIN (ANALYZE, BUFFERS)</code> that both arms use their index rather than a seq scan.</td></tr>
+  <tr><td>Failure isolation</td><td>Wrap each arm defensively: if the dense arm errors or times out, return lexical results rather than the whole query failing. Degraded search beats no search.</td></tr>
+</table>
+
+<h2>8. Companion Scripts</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it demonstrates</th></tr>
+  <tr>
+    <td><code>week2/day4/query_class_router.py</code></td>
+    <td>The classifier from the pipeline diagram: regex + token statistics over a set of realistic retail queries, showing the class assigned, the RRF weights chosen, and <em>why</em>. Includes the exact-identifier short circuit.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day4/hybrid_eval_by_class.py</code></td>
+    <td>Reproduces the evaluation trap numerically: computes aggregate nDCG (which improves), then per-class and revenue-weighted results (which don't). Prints the ship/no-ship call.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week2/day4
+python query_class_router.py
+python query_class_router.py --query "Salomon Quest 4 GTX size 11"
+python hybrid_eval_by_class.py</div>
+
+<h2>9. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Production Hybrid Search Check</h3>
+
+<div class="quiz">
+<div class="q">1. Why is a dense retriever's failure on "SKU-88213" worse than a simple recall miss?</div>
+<button data-correct="false">Because the embedding API rejects strings containing digits and punctuation.</button>
+<button data-correct="true">Because an embedding is a smooth function of its input — SKU-88214 embeds close to SKU-88213 despite being an unrelated product. It is a confident <em>precision</em> failure: a wrong item is returned at rank 1 with a high similarity score, so nothing looks broken in monitoring.</button>
+<button data-correct="false">Because identifiers exceed the model's context window.</button>
+<button data-correct="false">Because cosine distance is undefined for short strings.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. You add <code>tsv tsvector GENERATED ALWAYS AS (to_tsvector(name)) STORED</code> and Postgres rejects it. Why?</div>
+<button data-correct="true">The one-argument <code>to_tsvector(text)</code> depends on <code>default_text_search_config</code>, making it only STABLE. Generated columns require IMMUTABLE expressions — use the two-argument form with an explicit config: <code>to_tsvector('english', name)</code>.</button>
+<button data-correct="false">Generated columns cannot have the tsvector type.</button>
+<button data-correct="false">You must create the GIN index before adding the column.</button>
+<button data-correct="false">tsvector generation is only permitted inside a trigger.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. What is the significant limitation of <code>ts_rank_cd</code> compared to true BM25, and why does it matter specifically in retail?</div>
+<button data-correct="true">It has no IDF term — no corpus-wide statistics at all, scoring only on term frequency and cover density. So a rare, highly discriminative model number is weighted no more than a common word, which inverts exactly the property that makes lexical retrieval valuable for product search. ParadeDB's pg_search gives real BM25 if this bites.</button>
+<button data-correct="false">It cannot handle queries longer than 10 terms.</button>
+<button data-correct="false">It ignores stop words, which are essential for product names.</button>
+<button data-correct="false">It only works on English text.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Your hybrid rollout improves aggregate nDCG@10 from 0.647 to 0.696. What must you check before shipping?</div>
+<button data-correct="false">Nothing — a 4.9-point aggregate gain on a held-out set is conclusive.</button>
+<button data-correct="true">Per-class results weighted by business value. Aggregates average over segments of very different value; the exact-identifier class is a small share of traffic but converts several times higher, and blending dense results into a perfect exact match dilutes rank 1. The mean can rise while revenue-weighted quality falls.</button>
+<button data-correct="false">That the index was rebuilt after the change.</button>
+<button data-correct="false">That the dense arm returns exactly the same number of candidates as the lexical arm.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Why over-fetch top-100 from each retriever when the user sees 10 results?</div>
+<button data-correct="true">RRF can only fuse documents each arm actually surfaced. A strong consensus candidate sitting at rank 12 in both lists never enters fusion if you only retrieve 10. Rule of thumb: retrieve ~10× your final k from each arm — it's cheap, since both indexes are already warm.</button>
+<button data-correct="false">To give the HNSW index time to warm its cache.</button>
+<button data-correct="false">Because RRF requires both lists to be exactly 100 items long.</button>
+<button data-correct="false">To avoid Postgres switching to a sequential scan.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. What does hybrid search in Postgres have that Weaviate's built-in hybrid does not?</div>
+<button data-correct="false">Higher recall on natural-language queries.</button>
+<button data-correct="false">A choice between RRF and relative-score fusion.</button>
+<button data-correct="true">Transactional consistency between the lexical index and the source row. A generated <code>tsvector</code> column is maintained by the same commit that updates the product — no sync pipeline and no drift. Weaviate's hybrid is excellent, but it still sits on the far side of the dual-write boundary from your catalog.</button>
+<button data-correct="false">Native support for BM25 with IDF weighting.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want to go deeper on extracting structured filters from attribute-constrained queries, tuning GIN fastupdate for a write-heavy catalog, or adding a cross-encoder rerank stage? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day3/0009-pgvector-scale-limits.html">&larr; Day 3: Scale Tradeoffs</a>
+<a href="../day5/0011-operational-simplicity.html">Day 5: Operational Simplicity &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0012 — Week 2 Checkpoint: pgvector Justification &amp; Scale Boundary</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.86rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:9px 12px; text-align:left; }
+  .matrix-table td { padding:8px 12px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .adr { background:#fff; border:1px solid #e2ded8; border-left:4px solid #2e6b3e; border-radius:0 10px 10px 0; padding:1.6rem 1.9rem; margin:1.8rem 0; box-shadow:0 4px 12px rgba(0,0,0,0.06); }
+  .adr h2 { margin-top:0; border-bottom:2px solid #e2ded8; }
+  .adr h3 { color:#1f5f8b; margin-top:1.6rem; }
+  .drill { background:#edf4fb; border:1px solid #d0e3f7; border-radius:8px; padding:1.1rem 1.4rem; margin:1.2rem 0; }
+  .drill .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1a4971; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .trigger { background:#fff; border:1px solid #e2ded8; border-radius:9px; padding:0.9rem 1.2rem; margin:0.8rem 0; }
+  .trigger .t { font-weight:700; color:#a8451f; font-size:1.02rem; }
+  .trigger .n { font-family:"Fira Code",monospace; font-size:0.88rem; color:#1f5f8b; font-weight:600; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains ul { margin:0 0 0 1rem; }
+  .domains li { margin-bottom:0.3rem; font-size:0.87rem; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>Week 2 Checkpoint: pgvector Justification &amp; Scale Boundary</h1>
+<p class="subtitle">Week 2, Days 6–7 — portfolio deliverable &amp; interview-ready artifact</p>
+
+<p>Week 2 is complete. This document is the deliverable the plan asks for: <em>why pgvector was right for your project, and when it would break down at scale</em>. It is written as an Architectural Decision Record you can hand to an interviewer or a teammate, followed by an interview drill and a mastery check.</p>
+
+<div class="verdict">
+<div class="label">What makes this answer strong</div>
+Most candidates answer "why pgvector" with preferences — simplicity, familiarity, cost. This ADR answers it with a <strong>capacity model and named migration triggers</strong>. The difference between "pgvector is good enough for now" and "pgvector is correct until 25M vectors, at which point lever 3 buys us to 100M, and past that the trigger is X" is the difference between a senior engineer and an architect.
+</div>
+
+<div class="adr">
+<h2>ARCHITECTURAL DECISION RECORD (ADR-002)</h2>
+<p>
+<strong>Title:</strong> Vector Store Selection — pgvector vs Purpose-Built Vector Databases<br>
+<strong>Author:</strong> Yc (AI Data Platform Architect)<br>
+<strong>Status:</strong> Approved / Production<br>
+<strong>Supersedes:</strong> none &nbsp;|&nbsp; <strong>Related:</strong> ADR-001 (Embedding Model Selection)
+</p>
+
+<h3>1. Context</h3>
+<p>Workloads sharing this decision:</p>
+<ul>
+  <li><strong>Personal Agent</strong> — LangGraph + Postgres + OpenAI embeddings. ~10,000 document chunks, low QPS, single tenant, interactive chat latency budget.</li>
+  <li><strong>Retail platform (primary reference architecture)</strong> — 4M SKU embeddings at 1536 dims, 500 QPS peak, sub-100ms P99 target, catalog mutating every few minutes, 400 white-label storefronts.</li>
+  <li><strong>Insurtech underwriting corpus</strong> — ~200k chunks of filed forms, riders and underwriting guidelines across carriers and states. Low QPS, PHI-derived embeddings, bitemporal form versioning, retrieval auditability.</li>
+  <li><strong>Fintech</strong> — two distinct corpora that must not be conflated: ~150k document chunks (disclosures, dispute procedures) and ~2B transaction/merchant embeddings for fraud similarity at 4,000 QPS.</li>
+</ul>
+<p>§7 states where the decision differs across these. The retail figures carry the analysis unless noted.</p>
+<p>The question is not "which vector database benchmarks fastest." At this scale all candidates run HNSW variants and land within milliseconds of each other. The decisive question is <strong>where vector state lives relative to the source of truth</strong>, because that single choice determines whether freshness is a transaction or a pipeline.</p>
+
+<h3>2. Options Considered</h3>
+<table class="matrix-table">
+  <tr><th>Option</th><th>Shape</th><th>Principal strength</th><th>Principal cost</th></tr>
+  <tr><td><strong>A. pgvector</strong></td><td>Co-located — embedding is a column on the row</td><td>Atomic writes; joins; reuses all existing Postgres operations</td><td>Single-node volume ceiling; shares CPU with OLTP</td></tr>
+  <tr><td><strong>B. Pinecone</strong></td><td>Managed serverless, disaggregated</td><td>Namespaces; zero index tuning; elastic cost</td><td>Eventual consistency; closed source; metadata duplication</td></tr>
+  <tr><td><strong>C. Weaviate</strong></td><td>Open source or managed, disaggregated</td><td>Native hybrid; tenant shards with hot/cold offload</td><td>Second system; sync pipeline</td></tr>
+  <tr><td><strong>D. Milvus</strong></td><td>Distributed, storage/compute separated</td><td>Billion-scale; isolated index nodes; tunable consistency</td><td>Cluster + etcd + object store + message queue to operate</td></tr>
+</table>
+
+<h3>3. Decision</h3>
+<p><strong>Adopt pgvector (Option A) for both workloads.</strong> Revisit only when one of the four named triggers in §6 fires, with the specific numeric threshold met and evidenced.</p>
+
+<h3>4. Rationale — in priority order</h3>
+<ol>
+  <li><strong>The dual-write problem is the dominant cost, and it is invisible on pricing pages.</strong> Any store that is not Postgres makes the SKU write and the vector write two writes to two systems. That obliges a transactional outbox, a CDC consumer with idempotent upserts, a retry policy and dead-letter queue, a nightly reconciliation sweep, drift alerting, and a runbook for "the two systems disagree." Simulation of a 24-hour period at realistic catalog churn produced <strong>~221,000 SKU-minutes of drift and ~17,000 customer searches/day touching a stale result</strong>. On pgvector all of those are zero by construction — the row and its embedding commit together.</li>
+  <li><strong>Managed does not mean operated.</strong> A vendor manages <em>their</em> index. The freshness contract with the catalog remains ours in every architecture. The managed boundary sits at their API, not at our correctness requirement.</li>
+  <li><strong>Hybrid search is achievable in Postgres, and is actually <em>better</em> there.</strong> The lexical index is a generated <code>tsvector</code> column maintained by the same commit as the product row — no sync, no drift. Weaviate's built-in hybrid is excellent but still sits on the far side of the dual-write boundary.</li>
+  <li><strong>Recall monitoring is easier on Postgres.</strong> Exact search is the ground truth for an approximate index, and Postgres lets us compute it with <code>SET LOCAL enable_indexscan = off</code>. A managed service that offers no exact-search mode cannot produce ground truth without exporting every vector.</li>
+  <li><strong>Non-technical factors decide the rest.</strong> Compliance sign-off already covers the existing Postgres deployment; a new store holding the same customer-derived data restarts security review and data-residency assessment. And the 3am on-call engineer can already read a Postgres query plan.</li>
+  <li><strong>For the Personal Agent specifically</strong> — at ~10,000 chunks the index is well under 100 MB. Any vector database is correct on capability grounds; the minimal-toolset principle makes adding one indefensible.</li>
+</ol>
+
+<h3>5. Capacity Model — the numbers behind the decision</h3>
+<p>pgvector's HNSW index stores a <em>full copy</em> of every vector (traversal needs it at each node to compute distance), so the index is ~105–115% of the heap at 1536 dims — not the 30–60% a pointer-based index would cost.</p>
+
+<div class="code-inline">hnsw_per_row = dims×4  +  (2×m)×8 B  +  ~24 B      all over a ~0.9 fill factor
+             = 6,144  +  256        +  24          /0.9  =  ~7,138 B per row
+
+4M SKUs  ->  heap 24.7 GB  +  HNSW index 28.6 GB  =  ~53 GB on disk
+             RAM to keep the index cached: ~51 GB</div>
+
+<table class="matrix-table">
+  <tr><th>Corpus</th><th>Index</th><th>RAM to stay cached</th><th>Verdict</th></tr>
+  <tr><td>10K (Personal Agent)</td><td>&lt;100 MB</td><td>trivial</td><td>Any instance. Decision is not close.</td></tr>
+  <tr><td>4M (retail today)</td><td>28.6 GB</td><td>~51 GB</td><td><strong>Comfortable on a 64 GB instance</strong></td></tr>
+  <tr><td>10M</td><td>71 GB</td><td>~128 GB</td><td>Standard instance class. Fine.</td></tr>
+  <tr><td>25M</td><td>179 GB</td><td>~256 GB</td><td>Viable; apply <code>halfvec</code> and it is easy</td></tr>
+  <tr><td>50M</td><td>357 GB</td><td>~512 GB</td><td>Expensive but real; needs the mitigation ladder</td></tr>
+  <tr><td>100M+</td><td>714 GB</td><td>~1 TB</td><td><strong>Ladder exhausted — migration territory</strong></td></tr>
+</table>
+
+<p>Critically, pgvector does <em>not</em> degrade gracefully. HNSW traversal is serially-dependent pointer chasing at queue depth 1, so a fast SSD does not rescue an index that no longer fits RAM — you pay full per-read latency once per hop. The result is a cliff, not a slope: <strong>~2ms cached → ~10ms on local NVMe → 50–100ms on network SSD.</strong></p>
+
+<h3>6. Migration Triggers — the answer to "when would this break?"</h3>
+
+<div class="trigger">
+<div class="t">Trigger 1 — Volume</div>
+<div class="n">HNSW index + 1.8× headroom exceeds affordable single-node RAM (~50M vectors at 1536 dims after mitigation)</div>
+Replication does not help: every replica holds a <em>complete</em> copy, so replication scales QPS but never corpus size. → <strong>Milvus / Zilliz</strong>, or <code>pgvectorscale</code> StreamingDiskANN first.
+</div>
+
+<div class="trigger">
+<div class="t">Trigger 2 — Tenancy</div>
+<div class="n">Hundreds of tenants with skewed traffic requiring per-tenant index isolation and hot/cold tiering</div>
+A shared HNSW graph with a <code>tenant_id</code> filter makes <em>recall a function of tenant size</em> — small storefronts silently get worse search, and no default dashboard segments recall by tenant. Postgres offers table-per-tenant or RLS, but no offload-to-object-storage for dormant tenants. → <strong>Weaviate</strong> (tenant shards) or <strong>Pinecone</strong> (namespaces).
+</div>
+
+<div class="trigger">
+<div class="t">Trigger 3 — Write velocity</div>
+<div class="n">Sustained embedding ingest saturates the instance serving queries; REINDEX cannot fit a maintenance window</div>
+In Postgres, index build and live queries share one machine. → <strong>Milvus</strong> (dedicated index nodes).
+</div>
+
+<div class="trigger">
+<div class="t">Trigger 4 — Team shape</div>
+<div class="n">No Postgres operations capability on the team at all</div>
+→ <strong>Pinecone</strong> (fewest knobs). Note this inverts our situation rather than describing it.
+</div>
+
+<div class="caution">
+<div class="label">Escape hatches to exhaust before any migration</div>
+<strong>Mitigation ladder</strong> (measured, not estimated — fixed graph overhead means gains are lower than naive multiplication suggests):
+<table class="matrix-table" style="margin-top:0.7rem;margin-bottom:0.7rem;">
+  <tr><th>Lever</th><th>Real gain</th><th>Recall cost</th><th>Effort</th></tr>
+  <tr><td><code>halfvec</code> (fp16)</td><td>1.9×</td><td>~0.3%</td><td>ALTER COLUMN + REINDEX</td></tr>
+  <tr><td>MRL truncation 1536→512</td><td>2.8×</td><td>~2%</td><td>Re-embed + REINDEX</td></tr>
+  <tr><td>Both combined</td><td><strong>4.9×</strong></td><td>~2.3%</td><td>Both of the above</td></tr>
+  <tr><td>Binary quantization + exact rerank</td><td>13.6×</td><td>recoverable</td><td>Two-stage query</td></tr>
+</table>
+Plus: <code>pgvectorscale</code> (StreamingDiskANN), ParadeDB <code>pg_search</code> (real BM25 with IDF), AlloyDB ScaNN, Citus, and — before any of them — a <strong>dedicated read replica for search</strong>, which addresses the CPU-contention trigger without changing databases.
+</div>
+
+<h3>7. Domain Applicability</h3>
+<p>This ADR is written against the retail reference architecture. The same model applied to two adjacent domains gives materially different answers, which is stated here so the decision is not over-generalised.</p>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — as specified</div>
+    <p><span class="kv">4M × 1536 · 500 QPS</span></p>
+    <p>Index 28.6 GB, needs ~51 GB. Fits a 64 GB instance.</p>
+    <p><strong>Decision: pgvector.</strong> First constraint is CPU contention with OLTP → dedicated read replica.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance / insurtech</div>
+    <p><span class="kv">~200k × 1536 · 20 QPS</span></p>
+    <p>Index 1.4 GB. No wall reachable — 35× growth before RAM is a conversation.</p>
+    <p><strong>Decision: pgvector, and it isn't close.</strong> PHI keeps the vector inside the existing compliance perimeter; bitemporal form versioning and retrieval auditability are the real engineering.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech — split by corpus</div>
+    <p><span class="kv">docs 150k · txns 2B × 768</span></p>
+    <p>Documents look exactly like insurance. Transaction embeddings need 13.4 TB resident — 26× a 512 GB box, and the full mitigation ladder still leaves ~1.5 TB.</p>
+    <p><strong>Decision: pgvector for documents, sharded store for transactions.</strong> One company, two answers.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The generalisation to avoid</div>
+"pgvector is the right default" is not what this ADR concludes. It concludes that <em>at the stated corpus size, QPS, and tenancy</em>, co-location's transactional freshness outweighs what a purpose-built store adds. Change the corpus by three orders of magnitude — the fintech transaction case — and the same model recommends sharding. An architect who cannot name the conditions under which their own decision reverses has stated a preference, not a decision.
+</div>
+
+<h3>8. Cost-Optimised Variant (for a budget-constrained employer)</h3>
+
+<p>The decision above optimises for correctness and operational simplicity. Where cost dominates — an early-stage startup, or a team explicitly asked to cut infrastructure spend — the same analysis produces a second, defensible answer. Both are stated so the tradeoff is explicit rather than implied.</p>
+
+<table class="matrix-table">
+  <tr><th>Scale</th><th>pgvector float32</th><th>Best quantized external</th><th>Saving</th><th>Recommendation</th></tr>
+  <tr><td>1M</td><td>$1,033/mo</td><td>$3,754/mo</td><td class="no">−264%</td><td><strong>pgvector.</strong> External costs 4× more once engineering is priced.</td></tr>
+  <tr><td>10M</td><td>$3,577/mo</td><td>$3,764/mo</td><td class="partial">break-even</td><td><strong>pgvector <code>halfvec</code></strong> at $2,225 beats both.</td></tr>
+  <tr><td>100M</td><td>$29,016/mo</td><td>$3,880/mo</td><td class="yes"><strong>87%</strong></td><td>External FAISS IVF-PQ + rerank.</td></tr>
+  <tr><td>1B</td><td>$283,406/mo</td><td>$12,630/mo</td><td class="yes"><strong>96%</strong></td><td>Not a choice — pgvector is not deployable.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The cost-optimised architecture, when the crossover is passed</div>
+<strong>Keep the vector column in Postgres. Drop only the index.</strong> An unindexed <code>vector</code> column costs disk rather than RAM, and Postgres continues to provide the durable source of truth for index rebuilds, transactional writes, and the full-precision corpus the rerank stage needs. Search moves to an external FAISS IVF-PQ index (64 bytes/vector, ~87× smaller) returning IDs, which Postgres hydrates and filters.
+<p style="margin-top:0.7rem;margin-bottom:0;">This is strictly better than the commonly-drawn "Postgres holds metadata only" version, which discards all three of those properties and still has to store the vectors somewhere durable.</p>
+</div>
+
+<div class="caution">
+<div class="label">What the saving costs — state this unprompted</div>
+Recall falls from 0.98 to ~0.94 and only holds there <em>because</em> of the rerank stage. You accept a freshness lag set by rebuild cadence, lose SQL <code>WHERE</code> inside the index, lose MVCC, and put a service on the on-call rotation. The compression applies to what must be in RAM — not to what must exist.
+</div>
+
+<div class="drill">
+<div class="label">Q: "How would you cut our vector search bill?"</div>
+<p style="margin-bottom:0;">"First I'd check where we are against the crossover, because below roughly 10M vectors the answer is to do less, not more — an external quantized service costs more than pgvector once you price the 0.2 FTE to run it. Above it the lever isn't the ANN library, it's the encoding: at 1536 dims the vector is 6,144 bytes and the graph is 136, so compressing the vector is the only thing that moves the bill. int8 scalar quantization is 4× for about a point of recall and is the most underused option available. Product quantization gets to 64 bytes — 87× — but raw recall drops to ~0.75, so it only works with a rerank stage against full-precision vectors, which means keeping those vectors in the Postgres heap. At 100M that's about $29k/month down to $3.9k, and I'd want a golden-set recall job running before I shipped any of it, because every one of those levers trades quality for cost and the failure is silent."</p>
+</div>
+
+<div class="drill">
+<div class="label">Q: "You used AI coding tools — doesn't that make this less impressive?"</div>
+<p style="margin-bottom:0;">"It makes the build faster, not the system cheaper to own. I modelled it: dropping the build from four weeks to one moves the all-in cost at 100M vectors from $3,577 to $3,144 a month — about 12% — because the ongoing operational load dominates and doesn't shrink. What agents genuinely change is reach: a small team can now ship an architecture that used to need a bigger one. The judgment about <em>whether</em> to build it, and where the crossover sits, is still the part that matters."</p>
+</div>
+
+<h3>9. Consequences</h3>
+<p><strong>Accepted:</strong></p>
+<ul>
+  <li>Single-node volume ceiling; migration required past ~100M vectors.</li>
+  <li>Blast radius — search and OLTP share a failure domain. Mitigated by routing search to a dedicated read replica.</li>
+  <li>Vector data inflates backup size and PITR restore time for the whole database.</li>
+  <li><code>ts_rank_cd</code> has no IDF term, so lexical ranking is weaker than true BM25. Acceptable because RRF uses rank, not score; ParadeDB is the upgrade path if it bites.</li>
+  <li>Graph decay from catalog churn requires scheduled <code>REINDEX CONCURRENTLY</code> with 2× index disk headroom.</li>
+</ul>
+<p><strong>Required follow-on work:</strong></p>
+<ul>
+  <li>Nightly golden-set <strong>recall@10 monitoring</strong> on a read replica, alerting on the mean and paging per query class. Non-negotiable: measured decay of 0.99 → 0.87 over six months of churn with every SRE dashboard green.</li>
+  <li>Alerting on the HNSW index's own cache-hit ratio (<code>pg_statio_user_indexes</code>) as the RAM-cliff leading indicator — the database-wide ratio will not show it.</li>
+  <li>Query-class routing for hybrid search, with exact identifiers short-circuiting to a btree lookup rather than being fused.</li>
+  <li>Quarterly re-run of the capacity model against actual catalog growth.</li>
+</ul>
+</div>
+
+<h2>Interview Drill</h2>
+
+<div class="drill">
+<div class="label">Q: "Why did you use pgvector instead of a real vector database?"</div>
+<p style="margin-bottom:0;">"Because the hard part at our scale isn't the ANN index — it's the freshness contract with the catalog. pgvector makes that a transaction: the SKU row and its embedding commit together, so a stale or orphaned vector is structurally impossible. Every other option makes it a pipeline — outbox, CDC, reconciliation, drift alerting — that I have to build, staff, and page someone for, and that appears on no vendor's pricing page. I modelled it: a day of realistic catalog churn produces around 17,000 customer searches touching a stale result. So I'd need a scale, tenancy, or write-velocity requirement Postgres genuinely can't meet before taking on a second system — and I named those thresholds up front rather than waiting to be surprised."</p>
+</div>
+
+<div class="drill">
+<div class="label">Q: "At what point does that stop being true?"</div>
+<p style="margin-bottom:0;">"When the HNSW index no longer fits one machine's RAM, because traversal is serially-dependent pointer chasing — a fast SSD doesn't save you, since you're at queue depth 1 and pay full read latency per hop. It's a cliff: 2ms to 80ms, not a slope. At 1536 dims that's about 7 GB of index per million vectors. Under 10M is trivial; 25–50M is viable once I apply fp16 and MRL truncation, which measure at 4.9× combined rather than the 6× you'd get by multiplying naively, because the graph overhead is fixed. Past ~100M the in-Postgres ladder is exhausted and sharding is the only structural answer — replication can't help, since every replica needs the whole index. In practice, though, I'd expect to hit the CPU wall before the RAM wall if search shares the OLTP instance, so the first move is a dedicated read replica, not a new database."</p>
+</div>
+
+<div class="drill">
+<div class="label">Q: "What would you monitor?"</div>
+<p style="margin-bottom:0;">"Recall@10 from a golden query set, nightly, on a read replica — because it's the one signal missing from every default dashboard. Latency, error rate and cache-hit ratio all stay green while approximation quality decays from graph churn, stale centroids, or someone lowering ef_search to silence a latency alert. I simulated six months of churn: recall fell from 0.99 to 0.87 while work per query moved 6%, which trips no alert anyone has ever configured. Exact search is the ground truth, so it's a job, not a research project. And I'd alert on the mean but page per query class, because a small high-intent segment can collapse while the average looks fine."</p>
+</div>
+
+<h2>Decisions Log — Week 2 Entries</h2>
+<table class="matrix-table">
+  <tr><th>Decision</th><th>Chosen</th><th>One-line justification</th></tr>
+  <tr><td>Vector store</td><td>pgvector</td><td>Co-location makes freshness a transaction instead of a pipeline</td></tr>
+  <tr><td>Index type</td><td>HNSW</td><td>Better recall/latency and supports incremental inserts; IVFFlat's centroids go stale and it can't build on an empty table</td></tr>
+  <tr><td>Hybrid search</td><td>tsvector generated column + weighted RRF</td><td>Lexical index maintained by the same commit as the row; no second system</td></tr>
+  <tr><td>Query handling</td><td>Class-routed, not global alpha</td><td>Exact identifiers short-circuit to btree; a global alpha regresses the highest-converting segment</td></tr>
+  <tr><td>Search isolation</td><td>Dedicated read replica</td><td>Removes OLTP contention without changing databases</td></tr>
+  <tr><td>Quality monitoring</td><td>Nightly golden-set recall@10</td><td>The only signal that detects silent retrieval decay</td></tr>
+</table>
+
+<h2>Week 2 Mastery Checkpoint</h2>
+
+<div class="quiz-container">
+<h3>Synthesis Check</h3>
+
+<div class="quiz">
+<div class="q">1. What is the single strongest architectural argument for pgvector over a managed vector database?</div>
+<button data-correct="false">It delivers lower query latency than Pinecone or Milvus at equivalent recall.</button>
+<button data-correct="true">Co-location makes the freshness contract a transaction rather than a pipeline. The row and its embedding commit together, so stale and orphaned vectors are structurally impossible — while every disaggregated option obliges an outbox, CDC consumer, reconciliation sweep and drift alerting that no pricing page shows.</button>
+<button data-correct="false">Postgres is open source, so there is no vendor risk.</button>
+<button data-correct="false">pgvector supports more index types than Milvus.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Why can't you scale pgvector past its volume ceiling by adding read replicas?</div>
+<button data-correct="true">Replication scales QPS, not corpus size — every replica holds a complete copy of the index and needs it resident in its own RAM. One machine still bounds the volume either way. Sharding is what raises the ceiling.</button>
+<button data-correct="false">Replicas cannot serve queries against HNSW indexes.</button>
+<button data-correct="false">Each replica holds only a shard of the index, so recall degrades.</button>
+<button data-correct="false">Replication lag makes vector results inconsistent.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. You propose serving 400 storefronts from one HNSW index with a tenant_id filter. What is the strongest objection — and it isn't security?</div>
+<button data-correct="false">Postgres cannot index a tenant_id column alongside a vector column.</button>
+<button data-correct="true">Recall becomes a function of tenant size. A 2,000-SKU storefront inside a 4M-vector graph is a highly selective filter, so traversal burns its candidate budget on non-matching neighbours. Small tenants silently get worse search, and no default dashboard segments recall by tenant.</button>
+<button data-correct="false">Shared indexes cannot be rebuilt without downtime.</button>
+<button data-correct="false">Postgres row-level security is incompatible with pgvector.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Combining halfvec (2×) with MRL truncation 1536→512 (3×) gives what actual memory reduction, and why?</div>
+<button data-correct="false">6× — the reductions multiply exactly.</button>
+<button data-correct="true">4.9× — only the vector shrinks. The neighbour list (2m × 8 B = 256 B) and element header are fixed costs that survive every quantization, so per-row goes 6,424 B → 1,304 B rather than the naive 6×.</button>
+<button data-correct="false">2× — quantization and truncation are mutually exclusive.</button>
+<button data-correct="false">32× — binary quantization is applied automatically alongside.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Your hybrid rollout raises aggregate nDCG@10 from 0.647 to 0.696. Ship it?</div>
+<button data-correct="false">Yes — a held-out aggregate gain of that size is conclusive.</button>
+<button data-correct="true">No, not until you segment. Weighted by business value the same change is negative: the exact-identifier class is 8% of traffic converting at 4.3×, and blending dense results into a perfect match collapsed it from 0.94 to 0.71. Route that class to a btree lookup instead of fusing it, and every class improves.</button>
+<button data-correct="false">Yes, provided P99 latency did not regress.</button>
+<button data-correct="false">No — nDCG is never a valid retrieval metric.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Why is a fast NVMe drive no rescue for an HNSW index that has outgrown RAM?</div>
+<button data-correct="true">Graph traversal is serially dependent — each hop's address comes from the previous hop's result, so it runs at queue depth 1. High IOPS ratings assume deep queues. What you pay is per-read latency, ~100 hops in series, which is why it's a cliff (2ms → 10ms on NVMe, 50–100ms on network SSD) rather than a slope.</button>
+<button data-correct="false">Because pgvector bypasses the OS page cache entirely.</button>
+<button data-correct="false">Because Postgres single-threads all index scans.</button>
+<button data-correct="false">Because NVMe cannot store float32 vectors efficiently.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Week 2 complete. Next: Week 3 — RAG Architecture, starting with chunking strategies and how chunk size affects retrieval quality.</p>
+
+<div class="nav">
+<a href="../day5/0011-operational-simplicity.html">&larr; Day 5: Operational Simplicity</a>
+<a href="../../week3/day1/0013-chunking-strategies.html">Week 3, Day 1: Chunking Strategies &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct
+        ? '✅ Correct. You can defend this decision cold.'
+        : '❌ Review the ADR section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

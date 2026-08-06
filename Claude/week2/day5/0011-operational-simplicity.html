@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0011 — Operational Simplicity: What "It's Just Postgres" Actually Buys</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .reuse { display:flex; flex-wrap:wrap; gap:0.5rem; margin:1.2rem 0; }
+  .reuse span { background:#e9f2ec; border:1px solid #cfe3d4; color:#2e6b3e; font-size:0.87rem; font-weight:600; padding:0.35rem 0.7rem; border-radius:6px; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains ul { margin:0 0 0 1rem; }
+  .domains li { margin-bottom:0.3rem; font-size:0.87rem; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>Operational Simplicity — What "It's Just Postgres" Actually Buys</h1>
+<p class="subtitle">Week 2, Day 5 — day-2 operations, the metric nobody monitors, and who gets paged</p>
+
+<p>"It's just Postgres" is the most common justification for pgvector and the least examined. Today we make it precise: what you genuinely inherit for free, what pgvector adds that is <em>not</em> free, and the one signal that is missing from every default dashboard and silently decides whether your search is any good.</p>
+
+<h2>1. What You Actually Inherit</h2>
+
+<p>The value of an existing system is not that it works — it is that a decade of surrounding apparatus already exists and is already trusted. For a retail platform already running Postgres, adopting pgvector means the following arrive at zero marginal cost:</p>
+
+<div class="reuse">
+  <span>Backup &amp; PITR</span><span>Streaming replication</span><span>Failover / HA</span>
+  <span>Connection pooling</span><span>Schema migration tooling</span><span>RBAC &amp; row-level security</span>
+  <span>TLS &amp; network policy</span><span>pg_stat_* monitoring</span><span>Slow query logging</span>
+  <span>Existing alerting</span><span>DR runbooks</span><span>Audit &amp; compliance sign-off</span>
+  <span>On-call familiarity</span><span>SQL skills on the team</span>
+</div>
+
+<p>Two of those are worth more than the rest combined, and neither is technical:</p>
+
+<div class="verdict">
+<div class="label">The two that actually decide it</div>
+<strong>Compliance sign-off.</strong> Your Postgres deployment has already been through security review, data-residency assessment, and audit. A new data store holding the same customer-derived data restarts that process — in a regulated retailer that is a quarter of calendar time, not an engineering estimate.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>On-call competence.</strong> At 3am, someone who has debugged Postgres for years is paged. That person can read a query plan, check replication lag, and reason about locks. Ask them to diagnose why an unfamiliar vector cluster's coordinator is not assigning segments and you have a much longer incident.</p>
+</div>
+
+<h2>2. What pgvector Adds That Is <em>Not</em> Free</h2>
+
+<p>Be honest about this list, because an interviewer who has run pgvector will know it, and reciting only the benefits marks you as someone who has read about it rather than operated it.</p>
+
+<table class="matrix-table">
+  <tr><th>Day-2 concern</th><th>Why it's new</th><th>What you must actually do</th></tr>
+  <tr>
+    <td><strong>Memory sizing</strong></td>
+    <td>Vector indexes are far larger than b-trees and must stay cached (Day 3's cliff)</td>
+    <td>Size <code>shared_buffers</code> and instance RAM against index size; alert on the HNSW index's own cache-hit ratio, not the database aggregate</td>
+  </tr>
+  <tr>
+    <td><strong>Index build resources</strong></td>
+    <td>HNSW builds need large <code>maintenance_work_mem</code> or they spill and take ~5× longer</td>
+    <td>Set <code>maintenance_work_mem</code> and <code>max_parallel_maintenance_workers</code> per-session for builds, not globally</td>
+  </tr>
+  <tr>
+    <td><strong>Graph decay from churn</strong></td>
+    <td>Updates/deletes leave dead nodes in the graph; VACUUM does not restore quality</td>
+    <td>Schedule <code>REINDEX CONCURRENTLY</code> on a churn-driven cadence, with 2× index disk headroom</td>
+  </tr>
+  <tr>
+    <td><strong>Recall monitoring</strong></td>
+    <td><strong>Does not exist by default in any system</strong></td>
+    <td>Build a golden-set recall job — see §3, this is the important one</td>
+  </tr>
+  <tr>
+    <td><strong>Extension upgrades</strong></td>
+    <td>pgvector version is coupled to Postgres major version upgrades</td>
+    <td>Test <code>ALTER EXTENSION vector UPDATE</code> in staging; some upgrades require a reindex</td>
+  </tr>
+  <tr>
+    <td><strong>Workload isolation</strong></td>
+    <td>Search competes with OLTP for the same cores (Day 3, Wall #2)</td>
+    <td>Route search to a dedicated read replica before it becomes an incident</td>
+  </tr>
+</table>
+
+<h2>3. The Metric Nobody Monitors</h2>
+
+<div class="math-box">
+Your dashboards measure whether the query <em>ran</em>. Nothing measures whether it returned the <em>right rows</em>.
+</div>
+
+<p>This is the single most valuable operational insight in Week 2. Every default observability setup for a database tracks latency, throughput, error rate, cache hit ratio, replication lag. All of those can be green while your vector search quietly returns worse results every week.</p>
+
+<p>Recall is an <em>approximation quality</em> metric, and approximation quality degrades from causes that are invisible to conventional monitoring:</p>
+
+<ul>
+  <li><strong>Graph decay</strong> — churn leaves dead nodes; traversal wastes its candidate budget on entries that can never be returned.</li>
+  <li><strong>Stale IVFFlat centroids</strong> — new products cluster badly against centroids computed on last quarter's catalog.</li>
+  <li><strong>Distribution drift</strong> — a new category is added and its region of vector space is under-connected in the graph.</li>
+  <li><strong>Parameter drift</strong> — someone lowers <code>ef_search</code> to fix a latency alert. Latency improves. Recall drops. Both dashboards look like a success.</li>
+</ul>
+
+<p>That last one is worth dwelling on: <em>latency and recall trade against each other</em>, so an unmonitored recall metric means every latency optimisation is an unmeasured quality regression.</p>
+
+<svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="270" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">SIX MONTHS OF CATALOG CHURN — WHAT EACH DASHBOARD SEES</text>
+
+  <!-- axes -->
+  <line x1="70" y1="215" x2="650" y2="215" stroke="#999" stroke-width="1.5"/>
+  <line x1="70" y1="55" x2="70" y2="215" stroke="#999" stroke-width="1.5"/>
+
+  <!-- latency: flat green -->
+  <path d="M 70 190 L 180 189 L 290 191 L 400 188 L 510 190 L 640 189" stroke="#2e6b3e" stroke-width="2.5" fill="none"/>
+  <text x="545" y="180" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" font-weight="700">P99 latency — flat</text>
+
+  <!-- error rate: flat -->
+  <path d="M 70 205 L 180 205 L 290 204 L 400 205 L 510 205 L 640 205" stroke="#1f5f8b" stroke-width="2.5" fill="none"/>
+  <text x="560" y="199" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" font-weight="700">error rate — flat</text>
+
+  <!-- recall: declining -->
+  <path d="M 70 70 L 180 80 L 290 96 L 400 116 L 510 140 L 640 158" stroke="#c5221f" stroke-width="3" fill="none"/>
+  <text x="410" y="100" font-family="-apple-system,sans-serif" font-size="10.5" fill="#c5221f" font-weight="700">recall@10 — 0.99 → 0.87</text>
+  <text x="410" y="115" font-family="-apple-system,sans-serif" font-size="10" fill="#c5221f">(nothing alerts on this)</text>
+
+  <!-- alert threshold -->
+  <line x1="70" y1="140" x2="650" y2="140" stroke="#a8451f" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="76" y="135" font-family="-apple-system,sans-serif" font-size="9.5" fill="#a8451f">recall SLO 0.90 — breached in month 4, undetected without a golden-set job</text>
+
+  <text x="60" y="70" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">high</text>
+  <text x="60" y="212" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">low</text>
+  <text x="95" y="232" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">M1</text>
+  <text x="205" y="232" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">M2</text>
+  <text x="315" y="232" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">M3</text>
+  <text x="425" y="232" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">M4</text>
+  <text x="535" y="232" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">M5</text>
+  <text x="632" y="232" font-family="-apple-system,sans-serif" font-size="9.5" fill="#666">M6</text>
+  <text x="300" y="255" font-family="-apple-system,sans-serif" font-size="10" fill="#333">Every SRE dashboard is green for all six months.</text>
+</svg>
+
+<h3>How to actually measure it</h3>
+
+<p>Recall@k has a convenient property: the ground truth is computable. You do not need human labels — <strong>exact search <em>is</em> the ground truth</strong> for an approximate index. That makes this a job, not a research project.</p>
+
+<div class="code-inline">-- The whole idea in one query pair, run for each golden query.
+-- Ground truth: force an exact scan by disabling index scans.
+SET LOCAL enable_indexscan = off;
+SET LOCAL enable_bitmapscan = off;
+SELECT id FROM products ORDER BY embedding &lt;=&gt; $1 LIMIT 10;   -- exact top-10
+
+-- Approximate: the index path your production queries actually take.
+RESET enable_indexscan;
+SET LOCAL hnsw.ef_search = 100;
+SELECT id FROM products ORDER BY embedding &lt;=&gt; $1 LIMIT 10;   -- ANN top-10
+
+-- recall@10 = |exact ∩ approx| / 10, averaged over the golden query set.</div>
+
+<div class="verdict">
+<div class="label">The operational recommendation</div>
+Sample 500–1,000 real production queries (weighted by the Day 4 query classes, so you catch per-class decay), store their embeddings, and run the comparison nightly against a read replica. Alert when mean recall@10 drops below your SLO, and page when any <em>class</em> drops below it. Exact search on 1,000 queries is expensive — which is exactly why it belongs on a replica at 3am and not in the request path.
+</div>
+
+<div class="caution">
+<div class="label">This is not a pgvector problem — and that's the point</div>
+Pinecone, Weaviate and Milvus do not monitor your recall either. They report <em>their</em> service health. If a managed vector DB's index degrades or its defaults change, you find out the same way: by measuring. The difference is that on pgvector you can run exact search yourself to establish ground truth, cheaply, with SQL. On a managed service you may have no exact-search mode at all — meaning you cannot compute ground truth without exporting every vector. <strong>Postgres is the option where this job is easy to build.</strong>
+</div>
+
+<h3>What recall decay actually costs, by domain</h3>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p>Slightly worse product results. Shows up eventually in conversion, attributed to a dozen other things first.</p>
+    <p><strong>Detection:</strong> A/B tests and conversion dashboards will <em>eventually</em> surface it.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p>An underwriter is shown the wrong guideline, or misses the one that applies. Risk is mispriced — and it compounds silently across every application until someone notices.</p>
+    <p><strong>Detection:</strong> nothing downstream catches it. Loss ratios move quarters later, by which time thousands of policies are bound.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p>Fraud similarity search misses matches; support retrieval surfaces the wrong dispute procedure.</p>
+    <p><strong>Detection:</strong> fraud loss rates move, but attribution to retrieval quality is hard.</p>
+  </div>
+</div>
+
+<div class="verdict">
+<div class="label">Why the regulated cases make the recall job non-optional</div>
+In retail, recall decay is a slow revenue leak that some other metric will eventually catch. In insurance and fintech there is <strong>no downstream signal that catches it in time</strong> — a mispriced policy looks completely normal until the loss experience arrives, and by then the decay has been running for months. The golden-set job is not a nice-to-have observability improvement; in these domains it is the <em>only</em> control that detects the failure at all.
+</div>
+
+<h3>The requirement retail doesn't have: reproducing a past decision</h3>
+
+<p>In a regulated domain, "why did the system return this?" is a question you will be asked months or years later — by an auditor, a regulator, or opposing counsel in a claims dispute. Answering it means logging more than the answer:</p>
+
+<table class="matrix-table">
+  <tr><th>Log with every retrieval</th><th>Why the auditor needs it</th></tr>
+  <tr><td>Document IDs <em>and versions</em> returned</td><td>Establishes which contract wording informed the decision</td></tr>
+  <tr><td>Embedding model + version</td><td>Retrieval is not reproducible across model versions; the same query returns different chunks</td></tr>
+  <tr><td>Index parameters in effect (<code>ef_search</code>, filters)</td><td>A later parameter change alters results — you must show what was in force</td></tr>
+  <tr><td>The query embedding itself</td><td>The only way to actually re-run the retrieval as it happened</td></tr>
+  <tr><td>Effective-date filter applied</td><td>Proves the correct in-force form version was used (Day 1's bitemporal model)</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">This is your wedge again, and it is a big one</div>
+Reproducing a retrieval as of a past date is a <strong>data lineage and slowly-changing-dimension problem</strong>, not a machine-learning problem. It is exactly what you have built for 14 years. Most GenAI engineers have never been asked to prove what a system returned in March — and in insurance and fintech that question is routine.
+<p style="margin-top:0.7rem;margin-bottom:0;">The practical design: an append-only retrieval log, versioned document dimension with validity windows, and a pinned embedding-model version per corpus generation. Say this in an insurtech interview and you will be the only candidate who raised it.</p>
+</div>
+
+<h2>4. What Breaks, and Who Gets Paged</h2>
+
+<table class="matrix-table">
+  <tr><th>Failure</th><th>pgvector</th><th>Managed vector DB</th></tr>
+  <tr>
+    <td>Search latency spikes</td>
+    <td>Existing DB on-call; standard tools (<code>pg_stat_activity</code>, <code>EXPLAIN</code>)</td>
+    <td>Open a vendor ticket. You cannot see their query plan.</td>
+  </tr>
+  <tr>
+    <td>Results are wrong / stale</td>
+    <td>One system to inspect. <code>SELECT</code> the row, compare to the vector.</td>
+    <td>Is it the source, the outbox, the CDC consumer, or the index? Four places to look.</td>
+  </tr>
+  <tr>
+    <td>Index corruption / degradation</td>
+    <td><code>REINDEX</code>. Known, boring, documented.</td>
+    <td>Vendor-side. Your lever is a support escalation.</td>
+  </tr>
+  <tr>
+    <td>Region outage</td>
+    <td>Existing DR runbook and failover, already rehearsed</td>
+    <td>A second, separate DR story you must design and test</td>
+  </tr>
+  <tr>
+    <td>Cost spike</td>
+    <td>Impossible — fixed instance cost</td>
+    <td>Very possible. Consumption billing means a traffic anomaly is a bill.</td>
+  </tr>
+  <tr>
+    <td>Vendor changes defaults or pricing</td>
+    <td>N/A</td>
+    <td>Real risk with no technical mitigation</td>
+  </tr>
+</table>
+
+<details>
+<summary>The honest counter-case: when "just Postgres" becomes a liability</summary>
+<div class="details-body">
+<p>Do not oversell this. Co-location has a real operational downside — <strong>blast radius</strong>.</p>
+<ul>
+  <li>A runaway vector query consumes CPU that checkout needs. Two workloads, one failure domain (Day 3, Wall #2).</li>
+  <li>A <code>REINDEX</code> on the vector index competes with transactional traffic for I/O and CPU.</li>
+  <li>Vector data inflates your backup size and restore time — a 53 GB vector table makes PITR restores materially slower for the <em>whole</em> database, including the parts that have nothing to do with search.</li>
+  <li>A pgvector bug is now a bug in your system of record's process space.</li>
+</ul>
+<p>The mitigation for the first three is the same and is worth naming before an interviewer does: <strong>a dedicated read replica for search</strong>, or a separate Postgres instance with logical replication of just the catalog tables. You keep SQL, keep the tooling, keep the skills — and get failure isolation. That answer shows you have thought past the slogan.</p>
+</div>
+</details>
+
+<h2>5. The Upgrade and Exit Paths</h2>
+
+<table class="matrix-table">
+  <tr><th>Scenario</th><th>pgvector</th><th>Managed vector DB</th></tr>
+  <tr><td>Postgres major upgrade</td><td>Extension must be available on the target version; may require reindex. Test in staging.</td><td>Not applicable</td></tr>
+  <tr><td>Change embedding model (new dims)</td><td>New column, backfill, swap, drop old — all transactional, all rollback-able</td><td>New index/collection, re-upsert everything, cut over, reconcile</td></tr>
+  <tr><td>Leaving for something else</td><td>Data is already in SQL. Export is a <code>COPY</code>.</td><td>Pinecone: closed source, no self-host. Full re-index elsewhere.</td></tr>
+</table>
+
+<p>The embedding-model migration row is underrated. Changing embedding models is not hypothetical — it happens roughly annually. In Postgres it is <code>ADD COLUMN embedding_v2 vector(3072)</code>, backfill in batches, build the new index, flip the query, drop the old column. Every step is a transaction you can roll back, and both versions coexist for A/B comparison. Doing the same across a dual-write boundary means keeping two external indexes in sync with one source during the transition.</p>
+
+<h2>6. Companion Artifacts</h2>
+
+<table class="matrix-table">
+  <tr><th>File</th><th>What it's for</th></tr>
+  <tr>
+    <td><code>week2/day5/pgvector_ops_healthcheck.sql</code></td>
+    <td>Run against a real pgvector database. Reports index sizes vs RAM, the HNSW index's own cache-hit ratio (the Day 3 leading indicator), dead-tuple ratio and churn since last vacuum, index usage (is the ANN index even being used?), autovacuum status, and current settings that matter. Nine labelled sections, read-only.</td>
+  </tr>
+  <tr>
+    <td><code>week2/day5/recall_monitor.py</code></td>
+    <td>The golden-set recall job. Runs a self-contained demo that builds a real approximate index over synthetic vectors, measures real recall@10 against exact search, and shows recall decaying under simulated churn while latency stays flat. Also prints the production psycopg template to run against your own database.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week2/day5
+python recall_monitor.py                    # demo: watch recall decay, latency flat
+python recall_monitor.py --print-production-job
+psql -d yourdb -f pgvector_ops_healthcheck.sql</div>
+
+<h2>7. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Operations Check</h3>
+
+<div class="quiz">
+<div class="q">1. Which signal is missing from every default database dashboard and silently decides whether your vector search is any good?</div>
+<button data-correct="false">Replication lag on the search replica.</button>
+<button data-correct="true">Recall@k. Latency, throughput, error rate and cache-hit ratio can all be green while approximation quality decays from graph churn, stale centroids, or someone lowering ef_search to fix a latency alert. Since latency and recall trade against each other, an unmonitored recall metric means every latency optimisation is an unmeasured quality regression.</button>
+<button data-correct="false">The number of tuples returned per query.</button>
+<button data-correct="false">WAL generation rate from HNSW inserts.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Why is measuring recall a tractable engineering job rather than a labelling project?</div>
+<button data-correct="true">Exact search <em>is</em> the ground truth for an approximate index. Disable index scans, get the true top-10, compare to the ANN top-10. No human labels needed — it's expensive, which is why it runs nightly on a replica rather than in the request path.</button>
+<button data-correct="false">Because pgvector emits a recall estimate in EXPLAIN ANALYZE output.</button>
+<button data-correct="false">Because recall can be derived from the cache hit ratio.</button>
+<button data-correct="false">Because HNSW guarantees a fixed recall given m and ef_search.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. An interviewer pushes back: "'It's just Postgres' sounds like an excuse to avoid learning a new tool." What is the strongest non-technical answer?</div>
+<button data-correct="false">Postgres benchmarks faster than Pinecone at every scale.</button>
+<button data-correct="true">Compliance sign-off and on-call competence. The existing deployment has already cleared security review, data residency and audit — a new store holding the same customer-derived data restarts that, which in a regulated retailer is calendar time, not engineering time. And at 3am the person paged can already read a query plan and reason about locks.</button>
+<button data-correct="false">Postgres is open source, so it has no vendor risk of any kind.</button>
+<button data-correct="false">Adding any new system automatically violates SOC 2.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. What is the honest operational downside of co-locating vectors with your system of record?</div>
+<button data-correct="false">None — co-location is strictly superior.</button>
+<button data-correct="true">Blast radius. Search and OLTP share a failure domain: a runaway vector query or a REINDEX competes with checkout for CPU and I/O, and the 53 GB vector table slows PITR restores for the entire database. The mitigation is a dedicated read replica or a separate instance fed by logical replication — you keep SQL and the tooling, and gain isolation.</button>
+<button data-correct="false">Postgres cannot store vectors and relational data in the same table.</button>
+<button data-correct="false">Vector queries force the whole database into single-user mode during REINDEX.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. You need to migrate from a 1536-dim model to a 3072-dim one. Why is this materially easier on pgvector?</div>
+<button data-correct="true">It's a schema migration: ADD COLUMN embedding_v2, backfill in batches, build the new index, flip the query, drop the old column. Every step is transactional and rollback-able, and both versions coexist for A/B comparison. Across a dual-write boundary you must keep two external indexes in sync with one source throughout the transition.</button>
+<button data-correct="false">Because pgvector automatically re-embeds rows when the column type changes.</button>
+<button data-correct="false">Because managed vector databases cap vectors at 1536 dimensions.</button>
+<button data-correct="false">Because Postgres can convert 1536-dim vectors to 3072-dim without re-embedding.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help wiring the recall job into your existing alerting, or designing the logical-replication split that isolates search from OLTP? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day4/0010-hybrid-search-production.html">&larr; Day 4: Hybrid Search</a>
+<a href="../day6-7/0012-checkpoint-pgvector-justification.html">Day 6-7: Checkpoint &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -5,8 +5,16 @@ Yc — data engineer, ~14 years experience (SQL, data modeling, PySpark, Hive).
  
 ## Why
 Transitioning career over the next 3–6 months from Data Engineer → **AI/Data Platform Architect**
-(secondary: AI/ML Engineer), targeting the **retail** domain. This is the singular focus for the
-next 3 months — deviations should be redirected back to this plan.
+(secondary: AI/ML Engineer), targeting the **retail**, **life insurance / insurtech**, and
+**fintech** domains. This is the singular focus for the next 3 months — deviations should be
+redirected back to this plan.
+
+_Domain scope widened 2026-08-03 at Yc's request. Retail remains the primary worked example;
+life insurance and fintech are carried alongside it in every lesson. Insurance/insurtech is the
+closest match to Yc's current working context, and it exercises constraints retail does not —
+PHI/PII handling, state-by-state form variation, and decision auditability. Fintech contributes
+the opposite scale profile (billions of transaction embeddings, real-time freshness), which is
+useful precisely because it is the domain where the pgvector answer flips._
  
 ## The differentiator
 Deep production data engineering experience is the wedge against typical GenAI engineers who lack

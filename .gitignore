@@ -32,3 +32,4 @@ wheels/
 
 #creds
 .env
+__pycache__/

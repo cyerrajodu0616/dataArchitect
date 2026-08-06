@@ -1,0 +1,1273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0007 — pgvector Fundamentals: IVFFlat vs HNSW</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  /* two-column pros/cons */
+  .proscons { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin:1.3rem 0; }
+  .proscons > div { border-radius:9px; padding:1rem 1.2rem; border:1px solid #e2ded8; }
+  .proscons .pro { background:#f0f6f1; border-color:#cfe3d4; }
+  .proscons .con { background:#fdf4ef; border-color:#f0dbcc; }
+  .proscons h4 { margin:0 0 0.5rem 0; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.04em; }
+  .proscons .pro h4 { color:#2e6b3e; }
+  .proscons .con h4 { color:#a8451f; }
+  .proscons ul { margin:0 0 0 1.1rem; }
+  .proscons li { margin-bottom:0.35rem; font-size:0.94rem; }
+  @media (max-width:640px) { .proscons { grid-template-columns:1fr; } }
+
+  /* interactive calculator */
+  .calc { background:#fff; border:1px solid #e2ded8; border-radius:10px; padding:1.4rem 1.6rem; margin:1.6rem 0; box-shadow:0 4px 12px rgba(0,0,0,0.06); }
+  .calc h4 { margin:0 0 0.9rem 0; font-size:1rem; color:#1f5f8b; }
+  .calc .ctl { display:flex; align-items:center; gap:0.8rem; margin-bottom:0.7rem; flex-wrap:wrap; }
+  .calc .ctl label { font-size:0.88rem; font-weight:600; min-width:150px; color:#555; }
+  .calc .ctl input[type=range] { flex:1; min-width:160px; accent-color:#a8451f; }
+  .calc .ctl output { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.86rem; font-weight:700; color:#8c2a00; min-width:110px; text-align:right; }
+  .calc .bars { margin-top:1.1rem; }
+  .calc .bar-row { display:flex; align-items:center; gap:0.7rem; margin-bottom:0.55rem; }
+  .calc .bar-label { font-size:0.84rem; min-width:168px; color:#333; font-weight:600; }
+  .calc .bar-track { flex:1; background:#f4f2ee; border-radius:5px; height:26px; overflow:hidden; border:1px solid #e2ded8; }
+  .calc .bar-fill { height:100%; border-radius:4px 0 0 4px; transition:width 0.45s cubic-bezier(.22,.9,.3,1); }
+  .calc .bar-val { font-family:"Fira Code",monospace; font-size:0.83rem; font-weight:700; min-width:82px; text-align:right; }
+  .calc .verdict-line { margin-top:1rem; padding:0.7rem 0.9rem; border-radius:7px; font-size:0.9rem; font-weight:600; }
+  .fig-cap { font-size:0.86rem; color:#777; text-align:center; margin-top:-0.6rem; margin-bottom:1.4rem; font-style:italic; }
+
+  /* --- domain parallel blocks (retail / insurance / fintech) --- */
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains ul { margin:0 0 0 1rem; }
+  .domains li { margin-bottom:0.3rem; font-size:0.87rem; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+  .dtag { display:inline-block; font-size:0.72rem; font-weight:700; padding:0.15rem 0.45rem; border-radius:4px; letter-spacing:0.04em; text-transform:uppercase; vertical-align:middle; }
+  .dtag.retail { background:#e8f0fe; color:#1967d2; }
+  .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
+  .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+</style>
+</head>
+<body>
+
+<h1>pgvector Fundamentals — IVFFlat vs HNSW</h1>
+<p class="subtitle">Week 2, Day 1 — how Postgres stores vectors, index anatomy, and the ANN tradeoff</p>
+
+<p>Week 1 was about <em>what</em> vectors are and how to produce them. Week 2 is about where to <em>put</em> them and how to <em>query</em> them at scale. We start with pgvector — the choice your personal agent already uses — and go deep on how the two indexes (IVFFlat and HNSW) work so you can defend that choice in an interview.</p>
+
+<div class="retail-tag">Retail framing</div>
+<div class="example-box">
+<div class="label">Scenario</div>
+Your retailer's product catalog: 4 million SKU embeddings (1536-dim float32 vectors). Customers run ~500 concurrent search queries per second at peak (Black Friday). You need sub-100ms P99 latency. The question: can pgvector handle this, and which index type do you use?
+</div>
+
+<h3>The same question in three domains</h3>
+
+<p>Retail carries the running numbers through Week 2, but two other domains are worth holding alongside it — not as decoration, but because <strong>the same capacity model gives them different answers</strong>. If you can explain why, you understand the model rather than the conclusion.</p>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">4M vectors · 500 QPS</span></p>
+    <p>Product catalog search. Corpus mutates every few minutes as price and stock change.</p>
+    <p><strong>The middle case.</strong> pgvector fits comfortably; the interesting questions are index choice and hybrid search.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance / insurtech</div>
+    <p><span class="kv">~200k chunks · 20 QPS</span></p>
+    <p>Policy forms, riders, underwriting guidelines, state variations. Retrieval feeds underwriter and agent decisions.</p>
+    <p><strong>Scale is a non-issue.</strong> The binding constraints are PHI handling, state form correctness, and audit.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><span class="kv">2B vectors · 4,000 QPS</span></p>
+    <p>Transaction and merchant embeddings for fraud similarity and categorisation. Sub-second freshness.</p>
+    <p><strong>The case that breaks pgvector.</strong> Useful precisely because the answer flips.</p>
+  </div>
+</div>
+
+<div class="verdict">
+<div class="label">Why hold all three</div>
+An architect who only ever recites "pgvector is great" has a preference. One who can say <em>"for a 200k-chunk underwriting corpus it isn't close — but for 2 billion transaction embeddings at 4,000 QPS I'd be on a sharded store, and here's the row count where I'd switch"</em> has a model. Same formula, three conclusions. Use the memory explorer below to see it: set 200,000 vectors, then set 2,000,000,000.
+</div>
+
+<h2>1. How pgvector Physically Stores Vectors in Postgres</h2>
+
+<p>pgvector adds a native <code>vector(n)</code> column type to Postgres. Under the hood each vector is stored as a raw <code>float4[]</code> (array of 32-bit floats) in the table's heap pages — exactly like a regular array column. No separate storage engine.</p>
+
+<div class="code-inline">-- Enable extension and create a table
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE products (
+    id          BIGSERIAL PRIMARY KEY,
+    sku         TEXT NOT NULL,
+    description TEXT,
+    embedding   vector(1536)   -- 1536 float32 values per row
+);
+
+-- Size on disk per row: 1536 × 4 bytes = 6,144 bytes ≈ 6 KB per embedding
+-- 4M SKUs × 6 KB = ~24 GB of embedding data (heap only, index is additional)</div>
+
+<h3>Interactive: what does this actually cost in memory?</h3>
+
+<p>Drag the sliders. This is the model you should be able to reproduce on a whiteboard — every number below is computed live, not looked up.</p>
+
+<div class="calc" id="memcalc">
+  <h4>Memory footprint explorer</h4>
+
+  <div class="ctl">
+    <label for="mc-n">Vectors (corpus size)</label>
+    <input type="range" id="mc-n" min="4" max="9.4" step="0.05" value="6.602">
+    <output id="mc-n-out">4,000,000</output>
+  </div>
+  <div class="ctl">
+    <label for="mc-d">Dimensions</label>
+    <input type="range" id="mc-d" min="0" max="4" step="1" value="3">
+    <output id="mc-d-out">1536</output>
+  </div>
+  <div class="ctl">
+    <label for="mc-m">HNSW <code>m</code></label>
+    <input type="range" id="mc-m" min="4" max="64" step="4" value="16">
+    <output id="mc-m-out">16</output>
+  </div>
+  <div class="ctl">
+    <label for="mc-ram">Instance RAM (GB)</label>
+    <input type="range" id="mc-ram" min="8" max="1024" step="8" value="64">
+    <output id="mc-ram-out">64 GB</output>
+  </div>
+
+  <div class="bars">
+    <div class="bar-row">
+      <span class="bar-label">Heap (the table itself)</span>
+      <span class="bar-track"><span class="bar-fill" id="bar-heap" style="background:#8aa8bd;"></span></span>
+      <span class="bar-val" id="val-heap"></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">IVFFlat index</span>
+      <span class="bar-track"><span class="bar-fill" id="bar-ivf" style="background:#2e6b3e;"></span></span>
+      <span class="bar-val" id="val-ivf"></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">HNSW index</span>
+      <span class="bar-track"><span class="bar-fill" id="bar-hnsw" style="background:#1f5f8b;"></span></span>
+      <span class="bar-val" id="val-hnsw"></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">HNSW <em>peak build</em> memory</span>
+      <span class="bar-track"><span class="bar-fill" id="bar-build" style="background:#a8451f;"></span></span>
+      <span class="bar-val" id="val-build"></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">Your instance RAM</span>
+      <span class="bar-track"><span class="bar-fill" id="bar-ram" style="background:#c8b8a0;"></span></span>
+      <span class="bar-val" id="val-ram"></span>
+    </div>
+  </div>
+
+  <div class="verdict-line" id="mc-verdict"></div>
+</div>
+
+<p class="fig-cap">Per-row model: heap = dims×4 + 40 B · IVFFlat = (dims×4 + 16 B) / 0.9 · HNSW = (dims×4 + 2m×8 B + 24 B) / 0.9</p>
+
+<div class="caution">
+<div class="label">Before you slide to 3072: pgvector's index dimension limit</div>
+The explorer will happily size a 3,072-dim index for you, but pgvector <strong>will not build one on a <code>vector</code> column</strong>. An index entry must fit in a single 8 kB page, which caps indexes far below the column limits:
+<table class="matrix-table" style="margin-top:0.8rem;margin-bottom:0.8rem;">
+  <tr><th>Type</th><th>Max dims (column)</th><th>Max dims (HNSW / IVFFlat index)</th></tr>
+  <tr><td><code>vector</code> (float32)</td><td>16,000</td><td><strong style="color:#c5221f">2,000</strong> &nbsp;(2,000 × 4 B = 8,000 B)</td></tr>
+  <tr><td><code>halfvec</code> (fp16)</td><td>16,000</td><td><strong style="color:#a8451f">4,000</strong> &nbsp;(4,000 × 2 B = 8,000 B)</td></tr>
+  <tr><td><code>bit</code> (binary)</td><td>—</td><td><strong style="color:#137333">64,000</strong></td></tr>
+</table>
+So <code>text-embedding-3-large</code> at 3,072 dims needs <code>halfvec(3072)</code> or MRL truncation to ≤2,000 — the column and the inserts work fine, and only <code>CREATE INDEX</code> fails, which is why teams hit this <em>after</em> embedding a whole corpus. Week 2 Day 2 §12 covers this alongside Postgres's other memory ceilings.
+</div>
+
+<div class="caution">
+<div class="label">The nuance almost everyone gets wrong</div>
+"IVFFlat uses much less memory than HNSW" is the standard advice, and at 1536 dimensions it is <strong>barely true</strong> — try it on the slider above. Both indexes store a <em>full copy of every vector</em> (that is what "Flat" means in IVFFlat, and HNSW needs the vector at each node to compute distance during traversal). The only extra HNSW pays is the neighbour list, <code>2m × 8 bytes</code> — about 4% of the index at 1536 dims.
+<p style="margin-top:0.7rem;margin-bottom:0;">Set dimensions to 128 and watch the gap widen: the neighbour list is a <em>fixed</em> cost, so it dominates when vectors are small. <strong>The real HNSW memory cost is at build time, not steady state</strong> — the graph must be constructed in memory, roughly 2× the final index size. That is the bar that turns red first.</p>
+</div>
+
+<details>
+<summary>Why does dimension matter so much for storage?</summary>
+<div class="details-body">
+<p>Each <code>float32</code> value is 4 bytes. The math is straightforward:</p>
+<ul>
+  <li>1536-dim (OpenAI text-embedding-3-small): <strong>6 KB per vector</strong></li>
+  <li>768-dim (BGE-small): <strong>3 KB per vector</strong></li>
+  <li>256-dim (MRL-truncated): <strong>1 KB per vector</strong></li>
+</ul>
+<p>For 4M SKUs: 1536-dim = 24 GB heap. 256-dim MRL = 4 GB heap — a 6× RAM reduction for the Postgres shared_buffers hot cache. This is exactly why MRL truncation (Day 3, Week 1) matters operationally.</p>
+<p><strong>Plus index overhead:</strong> the HNSW index is roughly the same size again as the heap, because of the duplicated vector. Budget ~53 GB total for 4M × 1536-dim with HNSW. Week 2 Day 3 derives this precisely and shows why the common "30–60% overhead" rule of thumb understates it.</p>
+</div>
+</details>
+
+<h2>2. Exact Nearest Neighbor vs Approximate Nearest Neighbor (ANN)</h2>
+
+<p>A <strong>brute-force exact search</strong> computes the cosine similarity between the query vector and <em>every single</em> document vector, then returns the true k-nearest neighbors. This is called <strong>kNN (exact)</strong>.</p>
+
+<div class="code-inline">-- Exact search: no index, compares against EVERY row.
+-- Always correct. Always O(N). This is your ground truth.
+SELECT *
+FROM items
+ORDER BY embedding &lt;=&gt; '[0.1, 0.2, 0.3]'
+LIMIT 10;</div>
+
+<div class="math-box">
+  Brute-force cost: O(N × d) &nbsp;&nbsp; where N = corpus size, d = dimensions<br>
+  4M SKUs × 1536 dims = 6.14 billion float multiplications per query
+</div>
+
+<p>At 500 QPS: 6.14B × 500 = <strong>3.07 trillion float operations per second</strong>. Even on a 96-core server this is ~32ms per query — borderline acceptable, but with zero headroom for concurrent queries, index misses, or Black Friday spikes.</p>
+
+<p><strong>ANN indexes</strong> trade a small amount of recall accuracy (returning 99% of the true k-nearest instead of 100%) for a 10–1000× speedup by avoiding exhaustive comparison. IVFFlat and HNSW both reduce the number of vectors examined; the amount they skip is controlled by <code>probes</code> and <code>ef_search</code> respectively.</p>
+
+<div class="verdict">
+<div class="label">Keep this in your pocket</div>
+Exact search is not just the slow fallback — it is the <strong>ground truth you measure recall against</strong>. Because you can force it in Postgres with <code>SET LOCAL enable_indexscan = off</code>, measuring your index's real recall is a scheduled job rather than a research project. Week 2 Day 5 builds exactly that job.
+</div>
+
+<h3>Animated: the recall / latency dial</h3>
+
+<p>Both indexes expose one query-time knob that sweeps the same tradeoff. Watch what moves:</p>
+
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.2rem 0;">
+  <rect x="0" y="0" width="700" height="250" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">ONE KNOB, TWO CURVES — probes (IVFFlat) / ef_search (HNSW)</text>
+
+  <!-- axes -->
+  <line x1="80" y1="205" x2="640" y2="205" stroke="#999" stroke-width="1.5"/>
+  <line x1="80" y1="50" x2="80" y2="205" stroke="#999" stroke-width="1.5"/>
+  <text x="360" y="235" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333" text-anchor="middle">knob value (probes / ef_search) →</text>
+
+  <!-- recall curve: rises and saturates -->
+  <path d="M 80 190 Q 160 120 250 92 Q 360 70 640 62" stroke="#2e6b3e" stroke-width="3" fill="none"/>
+  <text x="500" y="52" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">recall — rises, then saturates</text>
+
+  <!-- latency curve: rises linearly -->
+  <path d="M 80 200 L 640 105" stroke="#c5221f" stroke-width="3" fill="none"/>
+  <text x="470" y="128" font-family="-apple-system,sans-serif" font-size="10.5" fill="#c5221f" font-weight="700">latency — keeps rising, linearly</text>
+
+  <!-- animated sweep line -->
+  <line y1="45" y2="212" stroke="#a8451f" stroke-width="2" stroke-dasharray="4,3">
+    <animate attributeName="x1" values="80;640;80" dur="7s" repeatCount="indefinite"/>
+    <animate attributeName="x2" values="80;640;80" dur="7s" repeatCount="indefinite"/>
+  </line>
+
+  <!-- animated marker riding the recall curve (absolute user-space path) -->
+  <circle r="6" fill="#2e6b3e" stroke="#fff" stroke-width="2">
+    <animateMotion dur="7s" repeatCount="indefinite" calcMode="linear"
+      keyPoints="0;1;0" keyTimes="0;0.5;1"
+      path="M 80 190 Q 160 120 250 92 Q 360 70 640 62"/>
+  </circle>
+  <!-- animated marker riding the latency line -->
+  <circle r="6" fill="#c5221f" stroke="#fff" stroke-width="2">
+    <animateMotion dur="7s" repeatCount="indefinite" calcMode="linear"
+      keyPoints="0;1;0" keyTimes="0;0.5;1"
+      path="M 80 200 L 640 105"/>
+  </circle>
+
+  <!-- sweet spot band -->
+  <rect x="215" y="45" width="95" height="167" fill="#2e6b3e" opacity="0.08"/>
+  <text x="262" y="42" font-family="-apple-system,sans-serif" font-size="9.5" fill="#2e6b3e" text-anchor="middle" font-weight="700">sweet spot</text>
+
+  <text x="72" y="66" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">high</text>
+  <text x="72" y="203" font-family="-apple-system,sans-serif" font-size="9" fill="#666" text-anchor="end">low</text>
+  <text x="330" y="180" font-family="-apple-system,sans-serif" font-size="10" fill="#555">Past the sweet spot you buy latency and get almost no recall.</text>
+</svg>
+
+<h2>3. IVFFlat — Inverted File Index with Flat Quantization</h2>
+
+<p><strong>IVF</strong> stands for <em>Inverted File</em>. IVFFlat organises vectors into clusters and searches only the clusters nearest your query — like a postal-code system for vector space. The <strong>"Flat"</strong> means vectors inside the selected clusters are compared <em>directly</em>, with no additional compression.</p>
+
+<h3>How it works</h3>
+<ol>
+  <li>During index creation, vectors are grouped into a fixed number of clusters (k-means).</li>
+  <li>Each cluster has a <strong>centroid</strong>.</li>
+  <li>For a query, the index finds the closest cluster centroids.</li>
+  <li>It searches only the vectors inside those clusters, and returns the best candidates.</li>
+</ol>
+
+<h3>Animated: an IVFFlat query</h3>
+
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="250" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">IVFFlat: PARTITION INTO VORONOI CELLS, THEN PROBE ONLY THE NEAREST</text>
+
+  <!-- Cluster circles -->
+  <circle cx="140" cy="125" r="60" fill="#1f5f8b" opacity="0.10" stroke="#1f5f8b" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <circle cx="320" cy="115" r="65" fill="#2e6b3e" opacity="0.10" stroke="#2e6b3e" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <circle cx="520" cy="130" r="55" fill="#a8451f" opacity="0.10" stroke="#a8451f" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- probed cluster highlight: cluster 2 lights up -->
+  <circle cx="320" cy="115" r="65" fill="#2e6b3e" stroke="#2e6b3e" stroke-width="3" opacity="0">
+    <animate attributeName="opacity" values="0;0;0.28;0.28;0" dur="6s" repeatCount="indefinite"
+             keyTimes="0;0.32;0.45;0.85;1"/>
+  </circle>
+
+  <!-- Centroids -->
+  <circle cx="140" cy="125" r="7" fill="#1f5f8b"/>
+  <text x="140" y="104" font-family="-apple-system,sans-serif" font-size="10" fill="#1f5f8b" text-anchor="middle" font-weight="700">Centroid 1</text>
+  <circle cx="320" cy="115" r="7" fill="#2e6b3e"/>
+  <text x="320" y="94" font-family="-apple-system,sans-serif" font-size="10" fill="#2e6b3e" text-anchor="middle" font-weight="700">Centroid 2</text>
+  <circle cx="520" cy="130" r="7" fill="#a8451f"/>
+  <text x="520" y="110" font-family="-apple-system,sans-serif" font-size="10" fill="#a8451f" text-anchor="middle" font-weight="700">Centroid 3</text>
+
+  <!-- Data points -->
+  <circle cx="115" cy="110" r="4" fill="#1f5f8b" opacity="0.55"/>
+  <circle cx="160" cy="145" r="4" fill="#1f5f8b" opacity="0.55"/>
+  <circle cx="130" cy="155" r="4" fill="#1f5f8b" opacity="0.55"/>
+  <circle cx="155" cy="105" r="4" fill="#1f5f8b" opacity="0.55"/>
+  <circle cx="295" cy="100" r="4" fill="#2e6b3e" opacity="0.55"/>
+  <circle cx="340" cy="135" r="4" fill="#2e6b3e" opacity="0.55"/>
+  <circle cx="310" cy="150" r="4" fill="#2e6b3e" opacity="0.55"/>
+  <circle cx="345" cy="100" r="4" fill="#2e6b3e" opacity="0.55"/>
+  <circle cx="495" cy="120" r="4" fill="#a8451f" opacity="0.55"/>
+  <circle cx="540" cy="145" r="4" fill="#a8451f" opacity="0.55"/>
+  <circle cx="510" cy="155" r="4" fill="#a8451f" opacity="0.55"/>
+
+  <!-- scan flashes inside probed cluster -->
+  <circle cx="295" cy="100" r="7" fill="none" stroke="#2e6b3e" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.48;0.55;0.62;1"/>
+  </circle>
+  <circle cx="345" cy="100" r="7" fill="none" stroke="#2e6b3e" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.55;0.62;0.69;1"/>
+  </circle>
+  <circle cx="340" cy="135" r="7" fill="none" stroke="#2e6b3e" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.62;0.69;0.76;1"/>
+  </circle>
+  <circle cx="310" cy="150" r="7" fill="none" stroke="#2e6b3e" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.69;0.76;0.83;1"/>
+  </circle>
+
+  <!-- Query vector arrives -->
+  <circle cx="300" cy="105" r="8" fill="#fab387" stroke="#c8602a" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;1;1;1;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.12;0.3;0.9;1"/>
+    <animate attributeName="r" values="14;8;8;8;8" dur="6s" repeatCount="indefinite" keyTimes="0;0.12;0.3;0.9;1"/>
+  </circle>
+  <text x="300" y="82" font-family="-apple-system,sans-serif" font-size="10" fill="#c8602a" text-anchor="middle" font-weight="700" opacity="0">
+    Query ★
+    <animate attributeName="opacity" values="0;1;1;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.12;0.9;1"/>
+  </text>
+
+  <!-- distance probes to centroids -->
+  <line x1="300" y1="105" x2="140" y2="125" stroke="#c8602a" stroke-width="1.2" stroke-dasharray="3,3" opacity="0">
+    <animate attributeName="opacity" values="0;0;0.7;0.15;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.18;0.3;0.45;1"/>
+  </line>
+  <line x1="300" y1="105" x2="320" y2="115" stroke="#c8602a" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.18;0.3;0.85;1"/>
+  </line>
+  <line x1="300" y1="105" x2="520" y2="130" stroke="#c8602a" stroke-width="1.2" stroke-dasharray="3,3" opacity="0">
+    <animate attributeName="opacity" values="0;0;0.7;0.15;0" dur="6s" repeatCount="indefinite" keyTimes="0;0.18;0.3;0.45;1"/>
+  </line>
+
+  <text x="20" y="222" font-family="-apple-system,sans-serif" font-size="11" fill="#333">1. compare query to every centroid (cheap — there are only <tspan font-weight="700">lists</tspan> of them)</text>
+  <text x="20" y="240" font-family="-apple-system,sans-serif" font-size="11" fill="#333">2. linearly scan only the <tspan font-weight="700">probes</tspan> nearest cells — the rest of the corpus is never touched</text>
+</svg>
+
+<h3>IVFFlat Build Phase (Training)</h3>
+<ol>
+  <li><strong>k-means clustering:</strong> Run k-means on all vectors to find <code>lists</code> centroids. Each vector is assigned to its nearest centroid and stored in that "list" (bucket).</li>
+  <li><strong>Index structure:</strong> A flat file of (centroid_id → list of vector_ids + raw vectors). No hierarchical tree.</li>
+</ol>
+
+<h3>IVFFlat Query Phase</h3>
+<ol>
+  <li>Find the <code>probes</code> nearest centroids to the query vector.</li>
+  <li>Linear scan <em>only</em> those lists (skipping the rest of the corpus).</li>
+  <li>Return top-k from scanned candidates.</li>
+</ol>
+
+<h3>Important parameters</h3>
+
+<table class="matrix-table">
+  <tr><th>Parameter</th><th>When it applies</th><th>What it controls</th><th>Raising it…</th></tr>
+  <tr>
+    <td><code>lists</code></td><td>Build</td>
+    <td>Number of clusters the corpus is partitioned into</td>
+    <td>Makes each cell smaller, so a probe scans less — but with too many lists and too few probes, the true neighbours fall outside the probed cells and recall drops</td>
+  </tr>
+  <tr>
+    <td><code>probes</code></td><td>Query</td>
+    <td>How many cells are searched per query</td>
+    <td>Improves recall, increases latency roughly linearly. <code>probes = lists</code> is exact search</td>
+  </tr>
+</table>
+
+<div class="code-inline">-- IVFFlat index creation
+-- lists: number of clusters (rule of thumb: sqrt(N) for N rows, max 1000-4000)
+-- For 4M rows: lists ≈ sqrt(4,000,000) ≈ 2,000
+CREATE INDEX ON products
+    USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 2000);
+
+-- Set probes at query time (session-level)
+SET ivfflat.probes = 20;   -- search 20/2000 lists = 1% of corpus
+
+-- Higher probes = better recall, slower query
+-- probes=1:   ~85% recall, fastest
+-- probes=20:  ~95% recall, ~20x slower than probes=1
+-- probes=2000: 100% recall = exact search (defeats the purpose)</div>
+
+<div class="proscons">
+  <div class="pro">
+    <h4>Advantages</h4>
+    <ul>
+      <li>Conceptually simple — clusters and a linear scan</li>
+      <li>Leaner index than HNSW, and dramatically lower <em>build</em> memory</li>
+      <li>Much faster to build; realistic to rebuild nightly</li>
+      <li>Fast searches on large datasets</li>
+      <li>Search speed tunable at query time with <code>probes</code></li>
+      <li>Cheap inserts — assign to the nearest centroid, no graph to mutate</li>
+    </ul>
+  </div>
+  <div class="con">
+    <h4>Disadvantages</h4>
+    <ul>
+      <li>Requires training from existing data at build time</li>
+      <li>Cannot be built on an empty table</li>
+      <li>Poorly chosen <code>lists</code>/<code>probes</code> quietly reduces recall</li>
+      <li>Needs more tuning, and the right values depend on your data distribution</li>
+      <li>Centroids go stale as the catalog drifts — needs periodic rebuilds</li>
+      <li>Usually less accurate than HNSW at comparable latency</li>
+    </ul>
+  </div>
+</div>
+
+<details>
+<summary>The IVFFlat cold-start problem: why you can't build it on an empty table</summary>
+<div class="details-body">
+<p>IVFFlat requires the k-means training phase to happen during <code>CREATE INDEX</code>. This means:</p>
+<ul>
+  <li>The table must contain at least <code>lists × 1</code> rows before indexing (preferably <code>lists × 10+</code> for good centroids).</li>
+  <li>For 4M rows with lists=2000: you need to load the full dataset <em>before</em> creating the index.</li>
+  <li>New rows inserted after index creation are still searchable but they don't update the centroids — they get assigned to the nearest centroid but aren't factored into cluster optimization.</li>
+  <li><strong>Production implication:</strong> Rebuild the index periodically (weekly/monthly) as the catalog changes significantly. This is an operational cost pgvector imposes that managed vector DBs often handle automatically.</li>
+</ul>
+<p>Week 2 Day 5's <code>recall_monitor.py</code> demonstrates this decay empirically — recall falls from 0.99 to 0.87 over six months of churn while every latency dashboard stays green.</p>
+</div>
+</details>
+
+<h2>4. HNSW — Hierarchical Navigable Small World</h2>
+
+<p>HNSW is inspired by the "six degrees of separation" principle in social networks. It builds a multi-layer graph where each vector is a node connected to nearby vectors. Higher layers hold fewer nodes and allow long-distance navigation; lower layers hold more nodes and provide detailed local search.</p>
+
+<h3>How it works</h3>
+<ol>
+  <li>Start at a node in a high-level graph layer.</li>
+  <li>Move greedily toward nodes increasingly similar to the query.</li>
+  <li>Descend through the layers when no closer neighbour exists at the current level.</li>
+  <li>Search a neighbourhood in the lowest (densest) layer.</li>
+  <li>Return the best candidates found.</li>
+</ol>
+
+<p>It is like navigating a map by zooming in: country → city → street.</p>
+
+<h3>Animated: an HNSW traversal</h3>
+
+<svg viewBox="0 0 700 275" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.5rem 0;">
+  <rect x="0" y="0" width="700" height="275" rx="10" fill="#1e1e2e" stroke="#333"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6c7086" letter-spacing="1" font-weight="600">HNSW: DESCEND THE LAYERS, GREEDILY, ONE HOP AT A TIME</text>
+
+  <!-- Layer 2 -->
+  <text x="20" y="60" font-family="-apple-system,sans-serif" font-size="10" fill="#cba6f7">Layer 2 (sparse — long-range hops)</text>
+  <line x1="160" y1="80" x2="390" y2="80" stroke="#cba6f7" stroke-width="1.5"/>
+  <line x1="410" y1="80" x2="570" y2="80" stroke="#cba6f7" stroke-width="1.5"/>
+  <circle cx="150" cy="80" r="10" fill="#cba6f7"/>
+  <circle cx="400" cy="80" r="10" fill="#cba6f7"/>
+  <circle cx="580" cy="80" r="10" fill="#cba6f7"/>
+
+  <!-- Layer 1 -->
+  <text x="20" y="140" font-family="-apple-system,sans-serif" font-size="10" fill="#89b4fa">Layer 1 (medium density)</text>
+  <line x1="108" y1="160" x2="192" y2="160" stroke="#89b4fa" stroke-width="1.5"/>
+  <line x1="208" y1="160" x2="312" y2="160" stroke="#89b4fa" stroke-width="1.5"/>
+  <line x1="328" y1="160" x2="422" y2="160" stroke="#89b4fa" stroke-width="1.5"/>
+  <line x1="438" y1="160" x2="552" y2="160" stroke="#89b4fa" stroke-width="1.5"/>
+  <circle cx="100" cy="160" r="8" fill="#89b4fa"/>
+  <circle cx="200" cy="160" r="8" fill="#89b4fa"/>
+  <circle cx="320" cy="160" r="8" fill="#89b4fa"/>
+  <circle cx="430" cy="160" r="8" fill="#89b4fa"/>
+  <circle cx="560" cy="160" r="8" fill="#89b4fa"/>
+
+  <!-- Layer 0 -->
+  <text x="20" y="212" font-family="-apple-system,sans-serif" font-size="10" fill="#a6e3a1">Layer 0 (dense — every node, short-range)</text>
+  <line x1="76" y1="235" x2="124" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="136" y1="235" x2="184" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="196" y1="235" x2="254" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="266" y1="235" x2="314" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="326" y1="235" x2="374" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="386" y1="235" x2="434" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="446" y1="235" x2="504" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <line x1="516" y1="235" x2="564" y2="235" stroke="#a6e3a1" stroke-width="1"/>
+  <circle cx="70"  cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="130" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="190" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="260" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="320" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="380" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="440" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="510" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="570" cy="235" r="6" fill="#a6e3a1"/>
+  <circle cx="630" cy="235" r="6" fill="#a6e3a1"/>
+
+  <!-- inter-layer links -->
+  <line x1="400" y1="90" x2="430" y2="152" stroke="#cba6f7" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="430" y1="168" x2="440" y2="229" stroke="#89b4fa" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <!-- the travelling search marker -->
+  <circle r="9" fill="#fab387" stroke="#fff" stroke-width="2">
+    <animateMotion dur="8s" repeatCount="indefinite" calcMode="linear"
+      keyPoints="0;0.02;0.30;0.34;0.60;0.64;0.90;1"
+      keyTimes="0;0.06;0.28;0.36;0.58;0.66;0.92;1"
+      path="M 150 80 L 400 80 L 430 160 L 320 160 L 430 160 L 440 235 L 380 235 L 380 235"/>
+  </circle>
+
+  <!-- visited highlights -->
+  <circle cx="150" cy="80" r="15" fill="none" stroke="#fab387" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;1;0;0" dur="8s" repeatCount="indefinite" keyTimes="0;0.05;0.2;1"/>
+  </circle>
+  <circle cx="400" cy="80" r="15" fill="none" stroke="#fab387" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="8s" repeatCount="indefinite" keyTimes="0;0.22;0.30;0.45;1"/>
+  </circle>
+  <circle cx="430" cy="160" r="13" fill="none" stroke="#fab387" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="8s" repeatCount="indefinite" keyTimes="0;0.34;0.42;0.6;1"/>
+  </circle>
+  <circle cx="440" cy="235" r="11" fill="none" stroke="#fab387" stroke-width="2" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0" dur="8s" repeatCount="indefinite" keyTimes="0;0.64;0.72;0.88;1"/>
+  </circle>
+  <circle cx="380" cy="235" r="11" fill="none" stroke="#f38ba8" stroke-width="2.5" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1" dur="8s" repeatCount="indefinite" keyTimes="0;0.9;0.94;1"/>
+  </circle>
+
+  <text x="20" y="265" font-family="-apple-system,sans-serif" font-size="10.5" fill="#a6adc8">Each hop's address comes from the previous hop's result — traversal is <tspan fill="#f9e2af" font-weight="700">serially dependent</tspan>. Remember this for Day 3.</text>
+</svg>
+
+<h3>Important parameters</h3>
+
+<table class="matrix-table">
+  <tr><th>Parameter</th><th>When it applies</th><th>What it controls</th><th>Raising it…</th></tr>
+  <tr>
+    <td><code>m</code></td><td>Build</td>
+    <td>Max graph connections per node per layer (default 16, range 4–64)</td>
+    <td>Improves recall; increases memory and build time. At 1536 dims the memory cost is small (~4% of index); at low dims it is substantial</td>
+  </tr>
+  <tr>
+    <td><code>ef_construction</code></td><td>Build</td>
+    <td>Beam width while building the graph (default 64, range 4–400)</td>
+    <td>Produces a better-connected graph and better recall at the same <code>m</code>; increases build time</td>
+  </tr>
+  <tr>
+    <td><code>ef_search</code></td><td>Query</td>
+    <td>Beam width during search (default 40)</td>
+    <td>Improves recall, increases latency. Must be ≥ k</td>
+  </tr>
+</table>
+
+<div class="code-inline">-- HNSW index creation
+-- Higher m → better recall + larger index + slower insert
+-- Higher ef_construction → better recall at same m + slower build
+
+CREATE INDEX ON products
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+-- At query time: control beam width during search
+SET hnsw.ef_search = 100;   -- wider beam = better recall, slower query
+-- ef_search must be >= k (number of results requested)
+-- Default ef_search = 40</div>
+
+<div class="proscons">
+  <div class="pro">
+    <h4>Advantages</h4>
+    <ul>
+      <li>Usually better recall than IVFFlat at the same latency</li>
+      <li>No separate clustering or training step</li>
+      <li>Can be built on an empty table</li>
+      <li>Handles incremental inserts well — no centroids to go stale</li>
+      <li>Strong low-latency performance and concurrent-query scaling</li>
+      <li>Fewer data-distribution assumptions to get wrong</li>
+    </ul>
+  </div>
+  <div class="con">
+    <h4>Disadvantages</h4>
+    <ul>
+      <li>Higher memory use — and <em>much</em> higher peak memory during build (~2× the final index)</li>
+      <li>Slower to build; expensive on large datasets</li>
+      <li>Inserts and updates cost more — each one mutates graph links on neighbouring nodes</li>
+      <li>Deletes leave tombstones the graph keeps traversing until a REINDEX</li>
+      <li>Query performance is sensitive to <code>m</code> / <code>ef_search</code></li>
+    </ul>
+  </div>
+</div>
+
+<h2>5. IVFFlat vs HNSW — The Definitive Comparison</h2>
+
+<h3>Animated: the three dimensions that actually differ</h3>
+
+<svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.4rem 0;">
+  <rect x="0" y="0" width="700" height="260" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="26" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">WHERE THEY REALLY DIVERGE (4M × 1536-dim, m=16)</text>
+
+  <!-- legend -->
+  <rect x="470" y="16" width="11" height="11" fill="#2e6b3e"/><text x="487" y="26" font-family="-apple-system,sans-serif" font-size="10" fill="#333">IVFFlat</text>
+  <rect x="560" y="16" width="11" height="11" fill="#1f5f8b"/><text x="577" y="26" font-family="-apple-system,sans-serif" font-size="10" fill="#333">HNSW</text>
+
+  <!-- Row 1: index size -->
+  <text x="24" y="60" font-family="-apple-system,sans-serif" font-size="11" fill="#333" font-weight="700">Index size on disk</text>
+  <rect x="200" y="48" height="16" rx="3" fill="#2e6b3e" width="0">
+    <animate attributeName="width" from="0" to="382" dur="1.1s" fill="freeze" begin="0.2s"/>
+  </rect>
+  <text x="596" y="61" font-family="SFMono-Regular,monospace" font-size="10" fill="#2e6b3e" font-weight="700" opacity="0">27.4 GB
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.3s"/></text>
+  <rect x="200" y="68" height="16" rx="3" fill="#1f5f8b" width="0">
+    <animate attributeName="width" from="0" to="399" dur="1.1s" fill="freeze" begin="0.35s"/>
+  </rect>
+  <text x="613" y="81" font-family="SFMono-Regular,monospace" font-size="10" fill="#1f5f8b" font-weight="700" opacity="0">28.6 GB
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.45s"/></text>
+  <text x="24" y="80" font-family="-apple-system,sans-serif" font-size="9.5" fill="#888">nearly identical — both store full vectors</text>
+
+  <!-- Row 2: peak build memory -->
+  <text x="24" y="120" font-family="-apple-system,sans-serif" font-size="11" fill="#333" font-weight="700">Peak build memory</text>
+  <rect x="200" y="108" height="16" rx="3" fill="#2e6b3e" width="0">
+    <animate attributeName="width" from="0" to="70" dur="1.1s" fill="freeze" begin="0.5s"/>
+  </rect>
+  <text x="278" y="121" font-family="SFMono-Regular,monospace" font-size="10" fill="#2e6b3e" font-weight="700" opacity="0">~5 GB
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+  <rect x="200" y="128" height="16" rx="3" fill="#a8451f" width="0">
+    <animate attributeName="width" from="0" to="450" dur="1.1s" fill="freeze" begin="0.65s"/>
+  </rect>
+  <text x="658" y="141" font-family="SFMono-Regular,monospace" font-size="10" fill="#a8451f" font-weight="700" text-anchor="end" opacity="0">~57 GB
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.75s"/></text>
+  <text x="24" y="140" font-family="-apple-system,sans-serif" font-size="9.5" fill="#a8451f" font-weight="600">THE REAL DIFFERENCE</text>
+
+  <!-- Row 3: build time -->
+  <text x="24" y="180" font-family="-apple-system,sans-serif" font-size="11" fill="#333" font-weight="700">Build time</text>
+  <rect x="200" y="168" height="16" rx="3" fill="#2e6b3e" width="0">
+    <animate attributeName="width" from="0" to="60" dur="1.1s" fill="freeze" begin="0.8s"/>
+  </rect>
+  <text x="268" y="181" font-family="SFMono-Regular,monospace" font-size="10" fill="#2e6b3e" font-weight="700" opacity="0">minutes
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.9s"/></text>
+  <rect x="200" y="188" height="16" rx="3" fill="#1f5f8b" width="0">
+    <animate attributeName="width" from="0" to="330" dur="1.1s" fill="freeze" begin="0.95s"/>
+  </rect>
+  <text x="538" y="201" font-family="SFMono-Regular,monospace" font-size="10" fill="#1f5f8b" font-weight="700" opacity="0">~40+ minutes
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.05s"/></text>
+
+  <!-- Row 4: recall -->
+  <text x="24" y="238" font-family="-apple-system,sans-serif" font-size="11" fill="#333" font-weight="700">Recall @ equal latency</text>
+  <rect x="200" y="226" height="16" rx="3" fill="#2e6b3e" width="0">
+    <animate attributeName="width" from="0" to="330" dur="1.1s" fill="freeze" begin="1.1s"/>
+  </rect>
+  <text x="538" y="239" font-family="SFMono-Regular,monospace" font-size="10" fill="#2e6b3e" font-weight="700" opacity="0">92–95%
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.2s"/></text>
+  <rect x="200" y="246" height="10" rx="3" fill="#1f5f8b" width="0">
+    <animate attributeName="width" from="0" to="392" dur="1.1s" fill="freeze" begin="1.25s"/>
+  </rect>
+  <text x="600" y="255" font-family="SFMono-Regular,monospace" font-size="10" fill="#1f5f8b" font-weight="700" opacity="0">97–99%
+    <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="2.35s"/></text>
+</svg>
+
+<p class="fig-cap">Reload the page to replay. Bars are proportional within each row, not across rows.</p>
+
+<table class="matrix-table">
+  <tr>
+    <th>Property</th>
+    <th>IVFFlat</th>
+    <th>HNSW</th>
+    <th>Architect decision factor</th>
+  </tr>
+  <tr>
+    <td><strong>Structure</strong></td>
+    <td>Clusters and inverted lists</td>
+    <td>Multi-layer proximity graph</td>
+    <td>Determines everything below</td>
+  </tr>
+  <tr>
+    <td><strong>Training required</strong></td>
+    <td>Yes — k-means during index creation</td>
+    <td>No separate clustering step</td>
+    <td>HNSW for streaming/incremental ingestion</td>
+  </tr>
+  <tr>
+    <td><strong>Build time</strong></td>
+    <td>Faster (single k-means pass)</td>
+    <td>Slower (graph construction)</td>
+    <td>IVFFlat for bulk initial loads and nightly rebuilds</td>
+  </tr>
+  <tr>
+    <td><strong>Build memory</strong></td>
+    <td>Low</td>
+    <td>High — ~2× final index size in RAM</td>
+    <td>The most common cause of a failed HNSW build</td>
+  </tr>
+  <tr>
+    <td><strong>Index size on disk</strong></td>
+    <td>~27 GB at 4M × 1536</td>
+    <td>~29 GB at 4M × 1536</td>
+    <td>Closer than folklore suggests — both store full vectors</td>
+  </tr>
+  <tr>
+    <td><strong>Query latency</strong></td>
+    <td>~2–5 ms (probes=20)</td>
+    <td>~0.5–2 ms (ef_search=100)</td>
+    <td>HNSW wins for low-latency production</td>
+  </tr>
+  <tr>
+    <td><strong>Recall @ same speed</strong></td>
+    <td>~92–95%</td>
+    <td>~97–99%</td>
+    <td>HNSW wins on quality</td>
+  </tr>
+  <tr>
+    <td><strong>Incremental inserts</strong></td>
+    <td>Cheap, but centroids go stale</td>
+    <td>Costlier per insert, stays correct</td>
+    <td>HNSW unless write volume is extreme</td>
+  </tr>
+  <tr>
+    <td><strong>Concurrent query scaling</strong></td>
+    <td>Moderate</td>
+    <td>Excellent</td>
+    <td>HNSW for high-QPS production</td>
+  </tr>
+  <tr>
+    <td><strong>Query-time tuning knob</strong></td>
+    <td><code>probes</code></td>
+    <td><code>ef_search</code></td>
+    <td>Both trade recall against latency</td>
+  </tr>
+  <tr>
+    <td><strong>Build-time tuning knobs</strong></td>
+    <td><code>lists</code></td>
+    <td><code>m</code>, <code>ef_construction</code></td>
+    <td>IVFFlat needs distribution-aware tuning</td>
+  </tr>
+  <tr>
+    <td><strong>Operational complexity</strong></td>
+    <td>More tuning around data distribution</td>
+    <td>More resource-intensive</td>
+    <td>Pick the failure mode you'd rather own</td>
+  </tr>
+  <tr>
+    <td><strong>Best use case</strong></td>
+    <td>Large, relatively stable datasets; memory-constrained</td>
+    <td>High-recall, low-latency search over changing data</td>
+    <td>—</td>
+  </tr>
+</table>
+
+<h2>6. Which Should You Choose?</h2>
+
+<div class="proscons">
+  <div class="pro">
+    <h4>Choose HNSW when</h4>
+    <ul>
+      <li>Search quality and recall matter</li>
+      <li>You need low query latency</li>
+      <li>The dataset changes frequently</li>
+      <li>You have enough memory — including for the build</li>
+      <li>You want a good default with less cluster tuning</li>
+    </ul>
+  </div>
+  <div class="con">
+    <h4>Choose IVFFlat when</h4>
+    <ul>
+      <li>Memory — especially <em>build</em> memory — is constrained</li>
+      <li>The dataset is large and relatively stable</li>
+      <li>You can invest in tuning <code>lists</code> and <code>probes</code></li>
+      <li>Fast index creation matters (e.g. nightly full rebuild)</li>
+      <li>Slightly lower recall is acceptable</li>
+    </ul>
+  </div>
+</div>
+
+<div class="verdict">
+<div class="label">Practical rule of thumb</div>
+Start with <strong>HNSW</strong> if you want the best general-purpose performance and can afford its memory. Start with <strong>IVFFlat</strong> if memory efficiency and fast index creation matter more.
+<p style="margin-top:0.7rem;margin-bottom:0;">For most production retail deployments — a catalog that changes daily, latency-sensitive search, adequate RAM — <strong>HNSW is the default</strong>. Reach for IVFFlat when the build itself is the binding constraint.</p>
+</div>
+
+<h2>7. Practical pgvector Queries for a Retail Catalog</h2>
+
+<div class="code-inline">-- Basic k-NN search (top 10 most similar products)
+SELECT id, sku, description,
+       1 - (embedding &lt;=&gt; '[...]'::vector) AS cosine_similarity
+FROM products
+ORDER BY embedding &lt;=&gt; '[...]'::vector   -- &lt;=&gt; is cosine distance operator
+LIMIT 10;
+
+-- Operators:
+--   &lt;=&gt;  cosine distance  (1 - similarity; lower = more similar)
+--   &lt;#&gt;  negative dot product
+--   &lt;-&gt;  Euclidean distance (L2)
+
+-- Filter + vector search (e.g., only boots category)
+SELECT id, sku, description,
+       1 - (embedding &lt;=&gt; query_vec) AS score
+FROM products
+WHERE category = 'boots'              -- pre-filter reduces scan size
+ORDER BY embedding &lt;=&gt; query_vec
+LIMIT 10;
+
+-- Monitor index usage
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM products
+ORDER BY embedding &lt;=&gt; '[...]'::vector
+LIMIT 10;
+-- Look for: "Index Scan using products_embedding_hnsw" in the plan</div>
+
+<details>
+<summary>The pre-filtering problem — why WHERE + vector search is tricky</summary>
+<div class="details-body">
+<p>When you add a <code>WHERE category = 'boots'</code> filter, Postgres faces a choice:</p>
+<ol>
+  <li><strong>Post-filter (ANN then filter):</strong> Run ANN on all vectors, then apply WHERE. Fast ANN, but may return fewer than k results if many top ANN hits don't satisfy the filter.</li>
+  <li><strong>Pre-filter (filter then exact scan):</strong> Apply WHERE first to get candidate set, then do exact kNN within that set. Accurate but defeats ANN speed if the filter matches a large fraction.</li>
+</ol>
+<p>pgvector uses a heuristic: if the filter is selective enough, it does exact search on the filtered subset; otherwise it falls back to ANN + post-filter.</p>
+<p><strong>Update:</strong> pgvector 0.8 added <strong>iterative index scans</strong>, which re-probe the index when a filter eliminates too many candidates instead of returning a short result set. This closes most of this gap. Turn it on with <code>SET hnsw.iterative_scan = relaxed_order;</code> (or <code>ivfflat.iterative_scan</code>).</p>
+<p><strong>Production workaround for extreme cases:</strong> Create <em>separate</em> pgvector tables per major category — each with its own HNSW index. Queries hit only the relevant table, eliminating the pre/post-filter dilemma entirely. Week 2 Day 2 compares this against Weaviate and Qdrant's native filtered-HNSW implementations.</p>
+</div>
+</details>
+
+<h2>8. Applied: A Product-Specific RAG on pgvector</h2>
+
+<p>The most common real use of everything above: answering questions about <em>your</em> products from <em>your</em> documentation. Manuals, FAQs, troubleshooting guides, policies, specifications.</p>
+
+<div class="verdict">
+<div class="label">Index choice for this workload</div>
+<strong>HNSW.</strong> A product knowledge base is thousands to hundreds of thousands of chunks — the index is small enough that HNSW's memory premium is irrelevant, while its advantages all apply: better recall, no cluster tuning, and clean handling of documents being added and updated over time. Note the correction to common intuition: HNSW uses <em>more</em> memory than IVFFlat, not less — it is simply that at this size the difference doesn't matter.
+</div>
+
+<h3>The pipeline</h3>
+
+<svg viewBox="0 0 700 150" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;margin:1.4rem 0;">
+  <rect x="0" y="0" width="700" height="150" rx="10" fill="#f4f2ee" stroke="#ddd8d0"/>
+  <text x="20" y="24" font-family="-apple-system,sans-serif" font-size="11" fill="#6b6b6b" letter-spacing="1" font-weight="600">PRODUCT RAG — RETRIEVAL FLOW</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="9.5">
+    <rect x="16" y="46" width="88" height="40" rx="6" fill="#fff" stroke="#c8602a" stroke-width="1.5"/>
+    <text x="60" y="63" text-anchor="middle" fill="#1a1a1a">User</text>
+    <text x="60" y="76" text-anchor="middle" fill="#1a1a1a">question</text>
+
+    <rect x="126" y="46" width="88" height="40" rx="6" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="170" y="63" text-anchor="middle" fill="#1a1a1a">Embed</text>
+    <text x="170" y="76" text-anchor="middle" fill="#1a1a1a">question</text>
+
+    <rect x="236" y="46" width="98" height="40" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="285" y="63" text-anchor="middle" fill="#1a1a1a">HNSW search</text>
+    <text x="285" y="76" text-anchor="middle" fill="#2e6b3e" font-weight="700">+ product filter</text>
+
+    <rect x="356" y="46" width="88" height="40" rx="6" fill="#fff" stroke="#a8451f" stroke-width="1.5"/>
+    <text x="400" y="63" text-anchor="middle" fill="#1a1a1a">Rerank</text>
+    <text x="400" y="76" text-anchor="middle" fill="#777">(optional)</text>
+
+    <rect x="466" y="46" width="88" height="40" rx="6" fill="#fff" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="510" y="63" text-anchor="middle" fill="#1a1a1a">Grounded</text>
+    <text x="510" y="76" text-anchor="middle" fill="#1a1a1a">prompt + LLM</text>
+
+    <rect x="576" y="46" width="88" height="40" rx="6" fill="#fff" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="620" y="70" text-anchor="middle" fill="#1a1a1a" font-weight="700">Answer</text>
+  </g>
+
+  <g stroke="#8a8578" stroke-width="1.5" marker-end="url(#ragarrow)">
+    <line x1="104" y1="66" x2="122" y2="66"/>
+    <line x1="214" y1="66" x2="232" y2="66"/>
+    <line x1="334" y1="66" x2="352" y2="66"/>
+    <line x1="444" y1="66" x2="462" y2="66"/>
+    <line x1="554" y1="66" x2="572" y2="66"/>
+  </g>
+
+  <!-- animated pulse travelling the pipeline -->
+  <circle r="5" fill="#fab387" opacity="0.9">
+    <animateMotion dur="5s" repeatCount="indefinite" path="M 60 96 L 620 96"/>
+  </circle>
+
+  <text x="20" y="128" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Retrieve 10–20 candidates, rerank to 3–5, and always filter by <tspan font-weight="700">product_id</tspan> — mixing products is the #1 failure mode.</text>
+
+  <defs><marker id="ragarrow" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L0,5 L6,2.5 z" fill="#8a8578"/></marker></defs>
+</svg>
+
+<h3>Schema and index</h3>
+
+<div class="code-inline">CREATE TABLE product_documents (
+    id         BIGSERIAL PRIMARY KEY,
+    product_id TEXT  NOT NULL,
+    content    TEXT  NOT NULL,
+    metadata   JSONB,
+    embedding  vector(1536)
+);
+
+CREATE INDEX product_documents_embedding_hnsw
+ON product_documents
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+-- Index the filter column too — the planner needs it to filter cheaply.
+CREATE INDEX product_documents_product_id ON product_documents (product_id);</div>
+
+<h3>Retrieval query</h3>
+
+<div class="code-inline">SELECT id,
+       content,
+       metadata,
+       1 - (embedding &lt;=&gt; $1::vector) AS similarity
+FROM product_documents
+WHERE product_id = $2                  -- never skip this
+ORDER BY embedding &lt;=&gt; $1::vector
+LIMIT 5;
+
+-- $1 = embedding of the user's question
+-- $2 = the product being asked about
+-- <=> is cosine distance under vector_cosine_ops; smaller = more similar</div>
+
+<div class="caution">
+<div class="label">Design requirement: always filter by product</div>
+If your database holds documentation for more than one product, an unfiltered search will confidently return the descaling procedure for a different coffee machine. Store metadata with every chunk and filter on it:
+<div class="code-inline" style="margin-top:0.8rem;margin-bottom:0.4rem;">{
+  "product_id":    "coffee_machine_123",
+  "document_type": "manual",
+  "version":       "2026-01",
+  "section":       "descaling",
+  "language":      "en"
+}</div>
+Depending on your data you may also need filters for model, region, language, documentation version, customer plan, user permissions, or document type. Note this interacts directly with §7's pre-filtering problem — with a highly selective <code>product_id</code>, enable pgvector 0.8's iterative scans.
+</div>
+
+<h3>The same pattern in insurance and fintech — and why the stakes differ</h3>
+
+<p>The mechanics are identical. What changes is the <em>consequence of getting the filter wrong</em>, and that changes how much engineering the filter deserves.</p>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — wrong product</div>
+    <p class="kv">product_id</p>
+    <p>Returns the descaling steps for a different coffee machine.</p>
+    <p><strong>Consequence:</strong> a bad answer and a support ticket. Annoying, recoverable.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance — wrong state or form version</div>
+    <p class="kv">carrier_id · state · form_version · effective_date</p>
+    <p>Returns the Texas version of a rider to an underwriter working a New York application, or a superseded form.</p>
+    <p><strong>Consequence:</strong> a compliance incident. Life insurance forms are filed state by state; quoting the wrong one is a regulatory finding, potentially a rescission.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech — wrong entity or jurisdiction</div>
+    <p class="kv">tenant_id · jurisdiction · product · as_of_date</p>
+    <p>Returns a disclosure that doesn't apply to this customer's account type or region.</p>
+    <p><strong>Consequence:</strong> a mis-disclosure — a UDAAP/consumer-protection exposure, not a UX problem.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The insurance-specific requirement: temporal correctness</div>
+Retail documentation has one current version. Insurance does not — a claim filed today may need to be adjudicated against <strong>the form version that was in force when the policy was issued</strong>, which could be a decade old. Your retrieval must be able to answer "what did the contract say <em>as of</em> this date," not "what does it say now."
+<p style="margin-top:0.7rem;margin-bottom:0;">That makes the filter bitemporal, and it makes deletion nearly impossible — superseded forms must remain retrievable but must never surface for a new application. In practice: keep every version, filter on an effective-date range, and never delete. Note the pleasant side effect — a corpus you only ever append to has <em>no graph decay from deletions</em>, which is the Day 5 problem largely solved by the data model.</p>
+</div>
+
+<div class="code-inline">-- Insurance variant: bitemporal filter on top of vector search.
+CREATE TABLE policy_documents (
+    id             BIGSERIAL PRIMARY KEY,
+    carrier_id     TEXT NOT NULL,
+    product_code   TEXT NOT NULL,      -- e.g. 'TERM-20'
+    form_number    TEXT NOT NULL,      -- e.g. 'ICC21-TL-NY'
+    state          CHAR(2) NOT NULL,
+    effective_from DATE NOT NULL,
+    effective_to   DATE,               -- NULL = currently in force
+    content        TEXT NOT NULL,
+    metadata       JSONB,
+    embedding      vector(1536)
+);
+
+CREATE INDEX policy_documents_embedding_hnsw
+    ON policy_documents USING hnsw (embedding vector_cosine_ops);
+
+-- Composite index supporting the filter, so the planner can be selective cheaply.
+CREATE INDEX policy_documents_scope
+    ON policy_documents (carrier_id, state, product_code, effective_from, effective_to);
+
+-- "What did this contract say on the date the policy was issued?"
+SELECT form_number, content,
+       1 - (embedding &lt;=&gt; $1::vector) AS similarity
+FROM policy_documents
+WHERE carrier_id = $2
+  AND state      = $3
+  AND product_code = $4
+  AND effective_from &lt;= $5                       -- $5 = policy issue date
+  AND (effective_to IS NULL OR effective_to &gt; $5)
+ORDER BY embedding &lt;=&gt; $1::vector
+LIMIT 5;</div>
+
+<div class="verdict">
+<div class="label">This is your data-engineering wedge, stated plainly</div>
+Slowly-changing dimensions, effective dating, bitemporal history, append-only audit tables — you have been building these for 14 years. Most GenAI engineers approach a RAG corpus as a folder of documents to embed. In a regulated domain it is a <em>versioned dimension with a validity window</em>, and treating it that way is the difference between a demo and a system that survives an audit. Say exactly this in an insurance or fintech interview.
+</div>
+
+<div class="caution">
+<div class="label">Fintech: know which corpus you are talking about</div>
+"Fintech RAG" hides two completely different workloads, and conflating them is a common interview stumble:
+<ul style="margin-bottom:0;">
+  <li><strong>Document retrieval</strong> — disclosures, policies, dispute procedures, KYC guidance. Tens of thousands of chunks. <em>Identical to the insurance case; pgvector with HNSW defaults.</em></li>
+  <li><strong>Transaction / merchant embeddings</strong> — hundreds of millions to billions of vectors for fraud similarity and merchant normalisation, at thousands of QPS with sub-second freshness. <em>A different architecture entirely — Day 3 shows exactly where this crosses the line.</em></li>
+</ul>
+</div>
+
+<h3>What matters more than the index choice</h3>
+
+<p>For a small RAG system, retrieval quality is affected far more by the following than by IVFFlat vs HNSW:</p>
+
+<table class="matrix-table">
+  <tr><th>Factor</th><th>Guidance</th></tr>
+  <tr>
+    <td><strong>1. Chunking</strong></td>
+    <td>Split on semantic boundaries — section, heading, procedure, FAQ entry, troubleshooting issue. Each chunk should contain one coherent piece of information. This is Week 3 Day 1's whole topic.</td>
+  </tr>
+  <tr>
+    <td><strong>2. Metadata</strong></td>
+    <td>Store product_id, title, section, version and language with every chunk. Metadata is what makes filtering — and later, debugging a bad answer — possible.</td>
+  </tr>
+  <tr>
+    <td><strong>3. Retrieval count</strong></td>
+    <td>Start at 3–8 chunks. Too many adds irrelevant content and burns context window, which measurably degrades answer quality.</td>
+  </tr>
+  <tr>
+    <td><strong>4. Reranking</strong></td>
+    <td>Retrieve 10–20 candidates with HNSW, rerank with a cross-encoder, pass the best 3–5 to the LLM. Week 1 Day 4's finding: "90% of retrieval failures are solved by reranking, not fine-tuning."</td>
+  </tr>
+  <tr>
+    <td><strong>5. Prompt grounding</strong></td>
+    <td>Explicitly instruct the model to answer only from retrieved context and to say when it doesn't know.</td>
+  </tr>
+</table>
+
+<div class="code-inline">-- Chunking: bad (one blob, several unrelated topics)
+"The product has several features, installation requirements, warnings,
+ maintenance instructions, and warranty limitations..."
+
+-- Chunking: good (one coherent topic per chunk)
+"Descaling the machine
+ Run the descaling cycle every three months..."
+
+"Power requirements
+ The device requires a 220-240 V power supply..."</div>
+
+<div class="code-inline">Answer the user's question using only the provided product documentation.
+
+If the answer is not present in the documentation, say that you do not
+have enough information. Do not invent specifications, procedures, or
+compatibility details.
+
+Retrieved documentation:
+{context}
+
+User question:
+{question}</div>
+
+<div class="verdict">
+<div class="label">Recommended starting architecture</div>
+Postgres + pgvector · HNSW index · cosine distance · product and document metadata in JSONB · metadata filtering on every query · retrieve 5–10 chunks · reranking added later if needed · a grounded-answer prompt · and an exact-search evaluation set so you can actually <em>measure</em> recall.
+<p style="margin-top:0.7rem;margin-bottom:0;">You almost certainly do not need IVFFlat here unless the corpus grows very large or build memory becomes a real constraint.</p>
+</div>
+
+<h2>9. Benchmark On Your Own Data</h2>
+
+<p>Every number in this lesson is a starting point, not a result. Whichever index you choose, measure these five on your real data and real queries:</p>
+
+<table class="matrix-table">
+  <tr><th>Measure</th><th>How</th><th>Why it bites</th></tr>
+  <tr><td>Query latency (P50 / P99)</td><td><code>EXPLAIN (ANALYZE, BUFFERS)</code>, pgbench at realistic concurrency</td><td>P99 is what customers feel; the mean hides the cliff</td></tr>
+  <tr><td><strong>Recall vs exact search</strong></td><td>Disable index scans for ground truth, compare top-k</td><td>The only quality signal — and it is not on any dashboard</td></tr>
+  <tr><td>Index build time</td><td>Time a <code>CREATE INDEX</code> on production-sized data</td><td>Determines whether rebuilds fit a maintenance window</td></tr>
+  <tr><td>Index size</td><td><code>pg_relation_size()</code></td><td>Decides whether it stays in RAM — see Day 3's cliff</td></tr>
+  <tr><td>Insert / update performance</td><td>Bulk-load benchmark with the index in place</td><td>HNSW inserts mutate the graph and are far costlier than b-tree</td></tr>
+</table>
+
+<h2>10. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>pgvector Architecture Check</h3>
+
+<div class="quiz">
+<div class="q">1. You're deploying pgvector HNSW for a 4M SKU retail catalog. During index BUILD you run out of RAM. What's the most likely cause?</div>
+<button data-correct="false">The m parameter is set too low (default 16).</button>
+<button data-correct="true">HNSW requires the full graph structure to fit in RAM during construction — roughly 2× the final index size. 4M × 1536-dim HNSW can require 60–80 GB during build.</button>
+<button data-correct="false">pgvector doesn't support vectors larger than 2000 dimensions.</button>
+<button data-correct="false">You forgot to run VACUUM before building the index.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. What does the <code>probes</code> parameter control in an IVFFlat index, and what's the tradeoff?</div>
+<button data-correct="false">The number of parallel CPU threads used during search.</button>
+<button data-correct="true">The number of Voronoi cell lists scanned per query. Higher probes = better recall accuracy but slower query latency. probes=lists gives exact search.</button>
+<button data-correct="false">The number of nearest neighbors (k) returned.</button>
+<button data-correct="false">The compression ratio of stored vectors.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. A new retail product line is added to the catalog daily (incremental inserts). Which index type handles this better and why?</div>
+<button data-correct="false">IVFFlat — because its centroid structure naturally accommodates new vectors.</button>
+<button data-correct="true">HNSW — new nodes are inserted by computing and storing their graph connections without needing to rebuild cluster centroids. IVFFlat centroids become stale and need periodic full rebuilds.</button>
+<button data-correct="false">Neither — pgvector doesn't support insert after index creation.</button>
+<button data-correct="false">IVFFlat — because it has lower write latency per insert than HNSW.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. What does the <code>&lt;=&gt;</code> operator compute in pgvector, and how is it different from cosine similarity?</div>
+<button data-correct="true">It computes cosine DISTANCE (1 − cosine_similarity). Lower values mean more similar. ORDER BY &lt;=&gt; sorts by ascending distance = descending similarity.</button>
+<button data-correct="false">It computes cosine similarity directly. Higher values mean more similar.</button>
+<button data-correct="false">It computes Euclidean (L2) distance.</button>
+<button data-correct="false">It computes dot product without normalization.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. "IVFFlat uses much less memory than HNSW." At 1536 dimensions, how accurate is this, and why?</div>
+<button data-correct="false">Completely accurate — IVFFlat stores only centroids, not vectors.</button>
+<button data-correct="true">Barely accurate for the on-disk index (~27 GB vs ~29 GB at 4M rows), because BOTH store a full copy of every vector — "Flat" means uncompressed, and HNSW needs the vector at each node to compute distance. HNSW's extra cost is only the neighbour list (~4% at 1536 dims). The real gap is peak BUILD memory: ~2× the final index for HNSW.</button>
+<button data-correct="false">Inaccurate — HNSW is always smaller because the graph replaces the vectors.</button>
+<button data-correct="false">Accurate only when m exceeds 32.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. You're building a RAG system over documentation for 200 different products, ~80k chunks total. What is the single most important design decision?</div>
+<button data-correct="false">Choosing IVFFlat to minimise memory at this corpus size.</button>
+<button data-correct="true">Storing product_id (and other metadata) with every chunk and filtering on it at query time. Without it, a question about one coffee machine confidently retrieves another model's descaling procedure. At 80k chunks the index choice barely matters — HNSW with defaults is fine.</button>
+<button data-correct="false">Setting ef_search as high as possible to guarantee 100% recall.</button>
+<button data-correct="false">Using Euclidean distance instead of cosine for document retrieval.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Why is exact search worth keeping in your toolkit even after you've built an ANN index?</div>
+<button data-correct="true">It is the ground truth for measuring the ANN index's recall. Postgres lets you force it with <code>SET LOCAL enable_indexscan = off</code>, which turns recall monitoring into a scheduled job rather than a labelling project.</button>
+<button data-correct="false">It is faster than HNSW for queries returning fewer than 10 rows.</button>
+<button data-correct="false">ANN indexes must be rebuilt from exact search results weekly.</button>
+<button data-correct="false">It is the only way to use metadata filters alongside vector search.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Questions on pgvector index tuning, maintenance overhead, chunking strategy for your product docs, or Postgres WAL implications for vector indexes? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../../week1/day6-7/0006-checkpoint-fine-tuning-1pager.html">&larr; Week 1 Checkpoint</a>
+<a href="../day2/0008-pinecone-weaviate-milvus.html">Day 2: Managed Vector DBs &rarr;</a>
+</div>
+
+<script>
+/* ---------- interactive memory footprint explorer ---------- */
+(function () {
+  var DIM_STEPS = [128, 384, 768, 1536, 3072];
+
+  var el = function (id) { return document.getElementById(id); };
+  var nS = el('mc-n'), dS = el('mc-d'), mS = el('mc-m'), rS = el('mc-ram');
+
+  function fmtBytes(b) {
+    if (b >= 1e12) return (b / 1e12).toFixed(1) + ' TB';
+    if (b >= 1e9)  return (b / 1e9).toFixed(1) + ' GB';
+    if (b >= 1e6)  return (b / 1e6).toFixed(0) + ' MB';
+    return (b / 1e3).toFixed(0) + ' KB';
+  }
+
+  function render() {
+    var n    = Math.round(Math.pow(10, parseFloat(nS.value)));
+    var dims = DIM_STEPS[parseInt(dS.value, 10)];
+    var m    = parseInt(mS.value, 10);
+    var ram  = parseInt(rS.value, 10) * 1e9;
+
+    el('mc-n-out').textContent   = n.toLocaleString();
+    el('mc-d-out').textContent   = dims;
+    el('mc-m-out').textContent   = m;
+    el('mc-ram-out').textContent = (ram / 1e9) + ' GB';
+
+    var vec   = dims * 4;
+    var heap  = n * (vec + 40);
+    var ivf   = n * ((vec + 16) / 0.9);
+    var hnsw  = n * ((vec + 2 * m * 8 + 24) / 0.9);
+    var build = hnsw * 2;
+
+    var max = Math.max(heap, ivf, hnsw, build, ram);
+    var set = function (bar, val, bytes) {
+      el(bar).style.width = (bytes / max * 100) + '%';
+      el(val).textContent = fmtBytes(bytes);
+    };
+    set('bar-heap',  'val-heap',  heap);
+    set('bar-ivf',   'val-ivf',   ivf);
+    set('bar-hnsw',  'val-hnsw',  hnsw);
+    set('bar-build', 'val-build', build);
+    set('bar-ram',   'val-ram',   ram);
+
+    var v = el('mc-verdict');
+    var gapPct = ((hnsw - ivf) / ivf * 100).toFixed(1);
+    if (build > ram) {
+      v.style.background = '#fce8e6'; v.style.color = '#c5221f';
+      v.textContent = 'HNSW BUILD WILL FAIL — needs ~' + fmtBytes(build) +
+        ' but you have ' + fmtBytes(ram) + '. Build IVFFlat instead, add RAM, ' +
+        'or shrink the vector (halfvec / MRL truncation).';
+    } else if (hnsw * 1.8 > ram) {
+      v.style.background = '#fdf4ef'; v.style.color = '#a8451f';
+      v.textContent = 'RAM CLIFF RISK — the index (' + fmtBytes(hnsw) +
+        ') will not stay comfortably cached in ' + fmtBytes(ram) +
+        '. Expect P99 to jump from ~2 ms to 50–100 ms. HNSW index is ' +
+        gapPct + '% larger than IVFFlat here.';
+    } else {
+      v.style.background = '#e6f4ea'; v.style.color = '#137333';
+      v.textContent = 'Comfortable — index stays cached, and the build fits. ' +
+        'HNSW index is only ' + gapPct + '% larger than IVFFlat at ' + dims +
+        ' dims, so choose on recall and inserts, not size.';
+    }
+  }
+
+  [nS, dS, mS, rS].forEach(function (s) { s.addEventListener('input', render); });
+  render();
+})();
+
+/* ---------- quiz ---------- */
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>
