@@ -1136,3 +1136,183 @@ the six lessons, only the intentional Week 4 forward link
 >    - Agent state persistence in Postgres is Week 4 Day 5 and should connect back to ADR-002.
 >
 > Let's dive into Week 4, Day 1!
+
+---
+
+# WEEK 4 — AGENT ORCHESTRATION
+
+Built at Yc's request with an explicit audience change: **"consider the audience as pretty new
+to this and give more examples or treat them as a 5 year kid."** Recorded as a durable
+preference (`beginner-ramp-then-architect-depth` in memory).
+
+## The pedagogical change applied
+Every lesson now opens at zero and *then* climbs to architect depth. New components in the
+shared style block:
+- `.plain` — "in plain words", jargon-free, before any technical treatment
+- `.anchor` — maps the new concept onto data-engineering intuition Yc already has, **and says
+  where the analogy breaks** (a wrong analogy costs more than none)
+- `.trythis` — a small concrete exercise
+- `<dl class="glossary">` — every term defined twice: plain, then in DE terms
+
+The anchor that carries Week 4: **state = a row you keep UPDATE-ing · node = an UPDATE ·
+edge = a CASE deciding what runs next.** Where it breaks: an Airflow DAG is fixed before the
+run; an agent's path is decided *during* the run by data that didn't exist at deploy.
+
+Depth was not reduced — every lesson still lands on a defensible number and an honest
+counterpoint. The ramp is an on-ramp.
+
+## Day 1 — LangGraph Fundamentals (`0019`)
+`state_machine_trace.py` is a **complete ~40-line graph engine** plus a refund agent, running
+one ambiguous message through a chain and a graph and printing **the full state trace** — every
+node, every field that changed.
+
+**The demo:** "hi, this isn't what I expected". Chain → `APPROVED` (guessed a refund for someone
+who wanted tracking). Graph → `SENT_TRACKING`. Same nodes, same logic. **The only difference is
+one arrow pointing backwards.**
+
+Fixed during the build: my first canned clarification made the chain guess *right* by luck,
+which destroyed the demo — changed so the customer actually wanted tracking. Also fixed
+untruncated previous-values exploding the `--runaway` output to 150 KB.
+
+**The trap section:** `--runaway` shows a cycle with no exit. **"Every cycle needs an exit
+condition guaranteed to fire; a step limit is a BACKSTOP, not the exit condition — if the limit
+is what stopped your agent, you have a bug, not a design."** `recursion_limit=25` is an answer
+about the seatbelt, not the brakes.
+
+**The test for whether you need a graph at all: count the backward edges.** Zero = build a
+pipeline. Also covered state reducers as the one thing the toy engine gets wrong (parallel nodes
+writing the same field → last-writer-wins; a declared reducer is the same fix as atomic
+`UPDATE ... SET x = x + 1`).
+
+## Day 2 — Framework Comparison (`0020`)
+Rejected the feature-grid framing: every framework can do everything, so the grid discriminates
+between nothing. **The question that decides it: which requirement changes need an EDIT and
+which need a REWRITE?** — knowable from the shape of the code before writing any.
+
+Four changes × four approaches, scored edit=0 / bolt-on=1 / rewrite=3:
+
+| | RAW | CHAIN | GRAPH | CREW |
+|---|---|---|---|---|
+| damage | 8 | 12 | **0** | 2 |
+
+**Explicitly not "graph wins."** RAW's 8 points come entirely from changes 2 and 3, which are
+*the same underlying requirement* — durable resumable state. Drop that and RAW scores 2 and
+becomes the cheapest option. **The mistake isn't picking the wrong framework, it's picking one
+before knowing which changes are coming.**
+
+The insight worth carrying: **"pause for a human" and "survive a crash" are the same technical
+requirement.** Also: RAW is underrated (~40 lines you own); CHAIN isn't obsolete (constraint is
+a feature); **CREW is specifically wrong where auditability is required** — control flow becomes
+emergent and "the agents talked until they converged" isn't an answer for a regulator.
+
+## Day 3 — Human in the Loop (`0021`)
+`approval_economics.py`. The textbook threshold is `review_cost / error_rate` = $56 for retail.
+It's wrong because it assumes catch rate is constant.
+
+**Reviewer attention is finite** → catch rate decays with queue depth → **total cost is U-shaped**
+→ real optimum is **$170**, three times the textbook answer.
+
+**The headline finding: "review everything" is not the safe default.** Two reviewers can process
+6,400 items/month. Route them 120,000 and **113,600 are auto-approved on a timeout**, while the
+6,400 actually seen arrive at 40/hour where catch rate has fallen to 25%. It costs more and
+controls less — **an expensive way to convert a real control into a theatrical one, and the
+failure is invisible because the approvals all come back signed.**
+
+**Insurance produced a better finding still: the optimum sits exactly at the capacity line**
+(1,099 routed vs 1,152 reviewable). **Staffing IS the control; the threshold is just how you
+express it.** "We have three underwriters, that's 1,150 reviews/month, so the threshold is
+whatever routes 1,150 cases — today about $17k" is a capacity plan. "$500" is a guess.
+
+Bugs fixed: the model originally let you buy review capacity you hadn't staffed (insurance said
+"review everything" while reporting a 62-day queue) → added a hard capacity constraint with
+overflow treated as unreviewed. Also an inverted HIGHER/LOWER sentence.
+
+Four HITL shapes covered, and **review-after-the-fact is not a weaker approval** — per-item
+review asks "is this one right?", sampled audit asks "has the agent started being wrong in a new
+way?" A reviewer won't notice the error rate moved from 4% to 11% last Tuesday.
+
+## Day 4 — Error Handling (`0022`)
+Opens with the arithmetic that surprises people: **99% per step × 6 steps = 94.1%; × 12 = 88.6%;
+× 20 = 81.8%.** Reliability multiplies. **The cheapest reliability work is deleting a step** —
+which runs directly against the instinct to decompose into small clean nodes.
+
+Retries: first one buys 94.1% → 98.5%; the second and third buy **essentially nothing** and cost
+$312/mo each, because everything retryable was already recovered and the rest is permanent.
+**So the first question isn't "how many retries" — it's "can I tell transient from permanent?"**
+
+**The centrepiece — the ambiguous failure.** Request landed, response lost. Retry → duplicate
+refund. Don't retry → maybe nothing happened. **Neither is safe without an idempotency key;
+both are safe with one.** Insurance: 0.156% of runs → 4 duplicate bound policies/month ×
+$18,000 = **$67,392/month**, against a fix that is a UUID in a header.
+
+**Say it precisely: a duplicate side effect is not a reliability problem — it is a correctness
+problem created by the reliability fix.** Retries improve availability and damage correctness;
+only idempotency gives both. **Keys ship before retries, not after.**
+
+Also: **backoff without jitter doesn't stop a retry storm** (everyone failed at the same instant,
+so they wait in lockstep) — `sleep(random.uniform(0, backoff))` is the half people forget. And a
+**circuit breaker on error rate closes Day 3's correlated-failure gap**: wrong the same way 4,000
+times is one incident, and a breaker stops it at 40.
+
+Agent-specific: **retry with the error fed back into the prompt** beats a blind retry, which just
+re-rolls the dice.
+
+## Day 5 — State Persistence (`0023`)
+`checkpoint_sizing.py`. Two findings.
+
+**1. The naive estimate is wrong.** `runs × steps × state_size` assumes constant state, but state
+grows as the run proceeds. Full checkpoints give 1+2+…+N = **N(N+1)/2 — quadratic**. Retail at
+6 steps is **3.6× the naive number**; at 20 steps it's 11×. **Doubling the nodes roughly
+quadruples storage.**
+
+That is an **independent second argument for fewer nodes** — Day 4 wanted it for reliability,
+Day 5 wants it for storage. *Splitting a node costs you twice.*
+
+**2. Write rate is a non-issue and nobody measures it.** Retail checkpoints are **12/sec peak
+against 2,400/sec of existing OLTP — 0.5%.** Teams reach for Redis to solve a problem they
+haven't measured.
+
+**The strongest Postgres argument, usually omitted: transactionality.** Checkpoint and business
+record commit together, so "refund issued" and "agent state says refund issued" can't diverge.
+Split them and you've **re-created the Week 2 dual-write problem — with the drift now between an
+action and the record of it.**
+
+Levers in order: **trim the state first** (free, most agent state is raw tool payloads nobody
+re-reads, and it shrinks storage + WAL + replication + restore + prompt tokens at once), then
+delta checkpoints, then retention — which is usually not an engineering decision. Insurance
+proves that: **2,555-day compliance retention, so 458 GB full vs 57 GB delta, and you cannot
+delete your way out.**
+
+## Day 6-7 — ADR-004 (`0024`)
+State graph with **every edge traced to a number** from Days 1–5, plus rollout ordering, a
+cross-domain table, and four interview drills.
+
+**The honest close:** three of six ADR decisions depend on **one number nobody has measured —
+the agent's actual error rate (assumed 4%).** The approval threshold, the retry economics and
+the value of the review queue all move with it. Sampling 200 actions is a week of work and
+firms up half the document. Stated as the thing to volunteer rather than have extracted.
+
+## Verification
+6 SVGs parse, all 5 scripts run, all flags exercised, 50 sections and 30 quiz questions across
+six lessons, only the intentional Week 5 forward link unresolved.
+
+## Handover prompt for Week 5, Day 1
+
+> I'm working through a 12-week AI Data Architect prep curriculum in `Claude/`.
+> 1. Please review `Claude/mission.md`, `Claude/dataPrep.md` and `Claude/NOTES.md` (Weeks 2-4).
+> 2. Completed: Week 1 embeddings (ADR-001) → Week 2 vector databases (ADR-002) → Week 3 RAG
+>    architecture (ADR-003) → Week 4 agent orchestration (ADR-004).
+> 3. Today's Topic (Week 5, Day 1): LLM fundamentals — context windows, tokens, cost
+>    implications. Reference artifact: `Claude/week5/day1/0025-context-windows-tokens-cost.html`
+> 4. **Audience note (important):** I'm new to a lot of this. Open each lesson at zero — plain
+>    words, an analogy anchored to data engineering, and a tiny example I can trace by hand —
+>    then build to architect depth. Keep the numbers and the honest counterpoints.
+> 5. Carry forward:
+>    - Week 3 Day 1 found **generation tokens are 53% of the retail bill and the vector index
+>      24%** — Week 5 should go deeper on exactly that cost.
+>    - Week 4 Day 5 found **agent state is quadratic in step count**, and that state often gets
+>      serialised into prompts — the two cost models connect.
+>    - Week 4's open question is the **measured agent error rate**; anything that helps estimate
+>      it is worth surfacing.
+>
+> Let's dive into Week 5, Day 1!

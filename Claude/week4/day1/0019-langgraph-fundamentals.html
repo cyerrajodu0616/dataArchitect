@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0019 — LangGraph Fundamentals: Why Agents Need Loops</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>LangGraph Fundamentals — Why Agents Need Loops</h1>
+<p class="subtitle">Week 4, Day 1 — starting from zero: what a state machine is, and why a chain can't do the job</p>
+
+<div class="plain">
+<div class="label">Before anything else — what are we even building?</div>
+<p>An <strong>agent</strong> is a program that decides what to do next instead of being told. That's it. That's the whole definition.</p>
+<p>A normal program: <em>"read the file, transform it, write it out."</em> You wrote the order. It never changes.</p>
+<p>An agent: <em>"here's a customer message and some tools. Figure out what they want and handle it."</em> The order of operations depends on what it finds along the way — and that's the only real difference.</p>
+<p><strong>Agent orchestration</strong> is the plumbing that decides <em>how</em> it gets to choose. That's this whole week.</p>
+</div>
+
+<h2>1. Two Shapes: A Line and a Board Game</h2>
+
+<p>There are two ways to organise the steps an agent takes, and almost everything this week comes back to the difference.</p>
+
+<div class="plain">
+<div class="label">In plain words</div>
+<p>A <strong>chain</strong> is a recipe. Step 1, step 2, step 3, done. You always go forward. You never go back to step 1.</p>
+<p>A <strong>graph</strong> (state machine) is a board game. There are squares, and after each square you look at the board to decide where to go next. You're allowed to <em>go back to a square you've already been on</em>.</p>
+<p>That one difference — being allowed to go backwards — is what today is about.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know</div>
+<p>You've built plenty of pipelines. A chain is an <strong>Airflow DAG</strong>: tasks with dependencies, strictly one direction, no cycles allowed — the "A" in DAG literally means acyclic.</p>
+<p>A state machine is <em>the same picture with the acyclic rule removed</em>, plus one shared object that every step reads and writes.</p>
+<p><strong>Where the analogy holds:</strong> nodes are tasks, edges are dependencies, and you can draw both on a whiteboard the same way.</p>
+<p style="margin-bottom:0;"><strong>Where it breaks — and this matters:</strong> in Airflow the graph is fixed before the run starts. In an agent, the <em>path</em> is decided during the run, by data that didn't exist when you deployed. That's why you can't just look at the diagram and know what happened; you have to look at the trace.</p>
+</div>
+
+<h2>2. The Three Words You Need</h2>
+
+<p>The vocabulary is genuinely small. Three terms, and here's each one twice — once in plain words, once in something you already write every day.</p>
+
+<dl class="glossary">
+  <dt>state</dt>
+  <dd><strong>Plain:</strong> a bag of everything known so far. Starts nearly empty, fills up as the agent works.<br>
+  <strong>In your terms:</strong> <em>one row in a table</em> that you keep running <code>UPDATE</code> on. Columns get filled in as you go.</dd>
+
+  <dt>node</dt>
+  <dd><strong>Plain:</strong> one step. It reads the bag, does something, and puts something back in the bag.<br>
+  <strong>In your terms:</strong> <em>an <code>UPDATE</code> statement.</em> Takes the row, changes some columns.</dd>
+
+  <dt>edge</dt>
+  <dd><strong>Plain:</strong> the arrow saying what happens next. A plain edge always goes to the same place. A <em>conditional</em> edge looks in the bag and picks.<br>
+  <strong>In your terms:</strong> <em>a <code>CASE</code> / <code>WHERE</code></em> that decides which statement runs next.</dd>
+</dl>
+
+<div class="math-box">state = a row &nbsp;&#183;&nbsp; node = an UPDATE &nbsp;&#183;&nbsp; edge = a CASE deciding what runs next</div>
+
+<p>If you hold onto that one line, the rest of the week is detail.</p>
+
+<h2>3. The Smallest Real Example</h2>
+
+<p>A customer messages a retailer. We want to handle it. Here are the steps:</p>
+
+<table class="matrix-table">
+  <tr><th>Node</th><th>What it does</th><th>What it puts in the bag</th></tr>
+  <tr><td><code>classify</code></td><td>Work out what they want</td><td><code>intent</code>, <code>confident</code></td></tr>
+  <tr><td><code>lookup_order</code></td><td>Fetch their order</td><td><code>order</code></td></tr>
+  <tr><td><code>check_policy</code></td><td>Is it inside the 30-day window?</td><td><code>within_window</code></td></tr>
+  <tr><td><code>approve</code> / <code>escalate</code></td><td>Decide</td><td><code>decision</code></td></tr>
+</table>
+
+<p>Now the customer sends this:</p>
+
+<div class="code-inline">"hi, this isn't what I expected"</div>
+
+<p>Read it again. <strong>It never says what they want.</strong> Not a refund, not tracking, not a cancellation. This is completely normal — most real messages are like this — and it is exactly where the two shapes stop being equivalent.</p>
+
+<h3>What the chain does</h3>
+
+<div class="code-inline">python state_machine_trace.py
+
+  step 1: classify
+        intent = 'unknown'   (new)
+        confident = False    (new)
+  step 2: lookup_order
+        order = {'item': 'laptop sleeve', 'days_since_delivery': 9, ...}
+  step 3: check_policy
+        within_window = True
+  step 4: decide
+        decision = 'APPROVED'
+
+  RESULT: APPROVED
+  WHY   : GUESSED that an unclear request meant refund, because
+          there was nowhere else to go</div>
+
+<div class="caution">
+<div class="label">Look at step 1 and then step 4</div>
+The chain <em>knew</em> it was confused — <code>confident = False</code> is right there in the state. And it approved a refund anyway.
+<p style="margin-top:0.7rem;margin-bottom:0;">Not because the code is bad. Because <strong>a chain only has forward arrows.</strong> Once you're at <code>classify</code> and you're unsure, the only arrow available points at <code>lookup_order</code>. There is no arrow that means "hang on, let me ask." So it guesses, and it just gave money to someone who wanted a tracking number.</p>
+</div>
+
+<h3>What the graph does</h3>
+
+<div class="code-inline">  step 1: classify
+        intent = 'unknown'
+        confident = False
+        branch chose: ask_clarify          &lt;-- a choice the chain couldn't make
+
+  step 2: ask_clarify
+        question_asked = 'Did you want a refund, tracking, or a cancellation?'
+        request: "hi, this isn't what I expected"
+              -> "hi, this isn't... | user said: no i just want to know
+                  where is my parcel"
+        clarify_count = 1
+
+  step 3: classify                          &lt;-- BACK to step 1, with more in the bag
+        intent: 'unknown' -> 'track'
+        confident: False -> True
+        branch chose: handle_track
+
+  step 4: handle_track
+        decision = 'SENT_TRACKING'
+
+  RESULT: SENT_TRACKING
+  PATH  : classify -> ask_clarify -> classify -> handle_track</div>
+
+<div class="verdict">
+<div class="label">Read the PATH line — <code>classify</code> appears twice</div>
+That's the whole lesson. Same nodes, same logic inside each node, same model if there were one. <strong>The only difference is one arrow pointing backwards.</strong>
+<p style="margin-top:0.7rem;margin-bottom:0;">Chain: <strong>APPROVED</strong> — gave a refund to someone who wanted a tracking number.<br>
+Graph: <strong>SENT_TRACKING</strong> — asked one question and got it right.</p>
+</div>
+
+<svg viewBox="0 0 760 300" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs><marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker>
+  <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#a8451f"/></marker></defs>
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE ONLY DIFFERENCE IS ONE ARROW</text>
+
+  <text x="24" y="56" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#a8451f">CHAIN &#8212; every arrow points right</text>
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <rect x="24" y="66" width="112" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="80" y="87" text-anchor="middle" fill="#333">classify</text>
+    <line x1="138" y1="83" x2="166" y2="83" stroke="#8a8578" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="170" y="66" width="112" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="226" y="87" text-anchor="middle" fill="#333">lookup_order</text>
+    <line x1="284" y1="83" x2="312" y2="83" stroke="#8a8578" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="316" y="66" width="112" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="372" y="87" text-anchor="middle" fill="#333">check_policy</text>
+    <line x1="430" y1="83" x2="458" y2="83" stroke="#8a8578" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="462" y="66" width="112" height="34" rx="5" fill="#fdf4ef" stroke="#a8451f"/>
+    <text x="518" y="87" text-anchor="middle" fill="#a8451f" font-weight="700">APPROVED</text>
+    <text x="590" y="87" fill="#a8451f" font-size="10">&#8592; wrong. it guessed.</text>
+  </g>
+
+  <text x="24" y="140" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#2e6b3e">GRAPH &#8212; one arrow points back</text>
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <rect x="24" y="176" width="112" height="34" rx="5" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="80" y="197" text-anchor="middle" fill="#1f5f8b" font-weight="700">classify</text>
+
+    <path d="M80,174 C80,146 226,146 226,170" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="170" y="172" width="112" height="34" rx="5" fill="#fff" stroke="#c9d6e2" opacity="0"/>
+    <rect x="170" y="150" width="112" height="0" rx="5" fill="none"/>
+
+    <rect x="170" y="128" width="140" height="34" rx="5" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="240" y="149" text-anchor="middle" fill="#2e6b3e" font-weight="700">ask_clarify</text>
+
+    <path d="M170,145 C150,145 140,160 140,176" fill="none" stroke="#a8451f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#a2)">
+      <animate attributeName="stroke-dashoffset" from="28" to="0" dur="1.2s" repeatCount="indefinite"/></path>
+    <text x="150" y="228" fill="#a8451f" font-weight="700" font-size="10">THE BACKWARD EDGE</text>
+
+    <line x1="138" y1="193" x2="166" y2="193" stroke="#8a8578" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="170" y="176" width="112" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="226" y="197" text-anchor="middle" fill="#333">handle_track</text>
+    <line x1="284" y1="193" x2="312" y2="193" stroke="#8a8578" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="316" y="176" width="120" height="34" rx="5" fill="#f0f6f1" stroke="#2e6b3e"/>
+    <text x="376" y="197" text-anchor="middle" fill="#2e6b3e" font-weight="700">SENT_TRACKING</text>
+    <text x="448" y="197" fill="#2e6b3e" font-size="10">&#8592; right. it asked.</text>
+  </g>
+
+  <line x1="24" y1="250" x2="736" y2="250" stroke="#e2ded8"/>
+  <text x="24" y="272" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Retry, clarify, re-plan, escalate, &#8220;try a different tool&#8221; &#8212; <tspan font-weight="700">all of these are the same move</tspan>: go back to an earlier node with more in the bag.</text>
+  <text x="24" y="290" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">A graph isn&#8217;t smarter than a chain. It has a bigger vocabulary of behaviours.</text>
+</svg>
+
+<div class="trythis">
+<div class="label">Try this</div>
+Run <code>python state_machine_trace.py</code> and read the trace next to the source. The whole engine is about 40 lines at the top of the file — <code>nodes</code>, <code>edges</code>, <code>branches</code>, and a <code>while</code> loop. There is nothing else in it. That is genuinely what LangGraph is, before it adds checkpointing and a nicer API.
+</div>
+
+<h2>4. The Trap Everybody Hits First</h2>
+
+<p>Loops are the point. Loops are also how you burn $4,000 overnight.</p>
+
+<div class="code-inline">python state_machine_trace.py --runaway
+
+  step 3: classify        branch chose: ask_clarify
+  step 4: ask_clarify     clarify_count: 1 -> 2
+  step 5: classify        branch chose: ask_clarify
+  step 6: ask_clarify     clarify_count: 2 -> 3
+
+  !! HALTED: step limit 6 exceeded
+     path was: classify -> ask_clarify -> classify -> ask_clarify -> ...</div>
+
+<div class="caution">
+<div class="label">Every cycle needs an exit condition that is guaranteed to fire</div>
+In the working version the exit is: <em>give up after 2 clarifying questions and hand to a human.</em> Not "loop until the model is confident" — a model that is confused about a genuinely ambiguous message will stay confused forever, and every trip round the loop is another paid LLM call.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>The step limit is a backstop, not the exit condition.</strong> If the step limit is what stopped your agent, you have a bug, not a design. This distinction is worth saying out loud in an interview, because "we set <code>recursion_limit=25</code>" is a very common answer and it is an answer about the seatbelt, not the brakes.</p>
+</div>
+
+<div class="anchor">
+<div class="label">You already know this pattern</div>
+It's a retry loop with a max-attempt count, and you'd never ship one without the counter. The only new thing is that the "attempt" costs an LLM call rather than a database round-trip — so the runaway is <em>expensive</em> as well as slow.
+</div>
+
+<h2>5. When Do You Actually Need a Graph?</h2>
+
+<p>Not always. This matters, because reaching for a framework you don't need is its own failure.</p>
+
+<table class="matrix-table">
+  <tr><th>If your workflow…</th><th>Use</th><th>Why</th></tr>
+  <tr><td>Always runs the same steps in the same order</td><td class="yes"><strong>A chain, or plain functions</strong></td><td>A graph adds concepts and gives you nothing back. Don't.</td></tr>
+  <tr><td>Needs to retry a step with different input</td><td><strong>Graph</strong></td><td>"Retry" is a backward edge. You can fake it with a <code>while</code> loop, and past two of them you've written a worse graph engine.</td></tr>
+  <tr><td>Needs to ask a human and continue afterwards</td><td class="yes"><strong>Graph</strong></td><td>You must pause, persist, and resume at the right node. Day 3 and Day 5.</td></tr>
+  <tr><td>Picks different tools depending on what it finds</td><td><strong>Graph</strong></td><td>That's a conditional edge.</td></tr>
+  <tr><td>Might loop an unknown number of times</td><td><strong>Graph</strong></td><td>And it needs an exit condition. §4.</td></tr>
+  <tr><td>Is one LLM call with a tool or two</td><td class="yes"><strong>Just call the API</strong></td><td>Day 2 makes this case properly. It's more often right than the ecosystem suggests.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The honest test</div>
+<strong>Count the backward edges.</strong> Zero backward edges means you have a pipeline, and you should build a pipeline. One or more means you have a state machine, whether or not you use a framework — and at that point using one is bookkeeping you don't have to write yourself.
+</div>
+
+<h2>6. The Same Idea in Three Domains</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — support agent</div>
+    <p><span class="kv">classify &#8594; ask &#8594; classify<br>&#8594; lookup &#8594; policy &#8594; decide</span></p>
+    <p><strong>Loop:</strong> ask a clarifying question when intent is unclear.</p>
+    <p><strong>Exit:</strong> hand to a human after 2 questions. Customers won't answer a third.</p>
+    <p>High volume, low value per interaction — the loop must be short because <em>every</em> extra turn multiplies across millions of conversations.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance — underwriting assistant</div>
+    <p><span class="kv">gather &#8594; check_missing &#8594; gather<br>&#8594; assess &#8594; human_review</span></p>
+    <p><strong>Loop:</strong> keep requesting missing evidence — labs, APS, MVR — until the file is complete.</p>
+    <p><strong>Exit:</strong> complete, or a deadline, or the applicant stops responding.</p>
+    <p>Loops can run for <em>weeks</em>. That makes state persistence (Day 5) load-bearing rather than a nicety — the process outlives any process.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech — dispute handler</div>
+    <p><span class="kv">intake &#8594; classify_reason<br>&#8594; gather_evidence &#8594; decide</span></p>
+    <p><strong>Loop:</strong> pull more evidence when confidence is below threshold.</p>
+    <p><strong>Exit:</strong> a hard regulatory clock — the network deadline doesn't care about your confidence.</p>
+    <p>The exit condition is set by law, which is the cleanest version of this: the deadline is a real thing, not a tuning parameter.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">Notice what differs across the three</div>
+The <em>shape</em> is identical in all three — a gather/check loop feeding a decision. What differs is the <strong>exit condition</strong>, and in each case it comes from the business, not from engineering: customer patience, an underwriting deadline, a regulatory clock.
+<p style="margin-top:0.7rem;margin-bottom:0;">That's the thing to notice as an architect. The interesting design decisions in an agent are almost never "which framework" — they're "when does this stop, and who decided that."</p>
+</div>
+
+<h2>7. What LangGraph Adds On Top</h2>
+
+<p>The 40-line engine in the companion script is a real state machine. LangGraph is that plus the things you'd otherwise write yourself:</p>
+
+<table class="matrix-table">
+  <tr><th>Feature</th><th>In plain words</th><th>Covered</th></tr>
+  <tr><td><strong>Checkpointing</strong></td><td>Saves the bag after every step, so you can crash and resume.</td><td>Day 5</td></tr>
+  <tr><td><strong>Interrupts</strong></td><td>Stop before a node, wait for a human, carry on later — possibly days later.</td><td>Day 3</td></tr>
+  <tr><td><strong>State reducers</strong></td><td>Rules for merging changes, e.g. <em>append</em> to a message list rather than overwrite it.</td><td>below</td></tr>
+  <tr><td><strong>Streaming</strong></td><td>Emit each step as it happens, so a UI can show progress.</td><td>—</td></tr>
+  <tr><td><strong>Parallel branches</strong></td><td>Run independent nodes at once and merge the results.</td><td>Day 4</td></tr>
+</table>
+
+<details>
+<summary>State reducers — the one piece the toy engine gets wrong</summary>
+<div class="details-body">
+<p>Our engine does <code>state.update(changes)</code>, which <strong>overwrites</strong>. That's fine for <code>intent</code> — the new value replaces the old. It is wrong for a conversation history: overwriting <code>messages</code> would throw away everything said before.</p>
+<p>LangGraph lets you declare, per field, how updates merge. Overwrite for scalars; append for lists.</p>
+<div class="code-inline">class State(TypedDict):
+    intent:   str                                   # overwrite (default)
+    messages: Annotated[list, operator.add]         # append instead</div>
+<p><strong>Why it matters beyond convenience:</strong> once nodes can run in parallel, two of them may write the same field. Overwrite means last-writer-wins and the result depends on timing. A declared reducer makes the merge deterministic — which is the difference between a bug you can reproduce and one you can't.</p>
+<p>If that sounds familiar, it should: it's the same problem as concurrent writes to a row, and a reducer is the same answer as an atomic <code>UPDATE ... SET x = x + 1</code> instead of read-modify-write.</p>
+</div>
+</details>
+
+<h2>8. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it does</th></tr>
+  <tr>
+    <td><code>week4/day1/state_machine_trace.py</code></td>
+    <td>A complete graph engine in ~40 lines plus a retail refund agent, running the same ambiguous request through a chain and a graph. Prints the <strong>full state trace</strong> — every node, every field that changed — so you watch the bag fill up rather than take it on trust. <code>--runaway</code> demonstrates the no-exit cycle and the guard that catches it.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day1
+python state_machine_trace.py                       # chain guesses wrong, graph asks
+python state_machine_trace.py --request "where is my order"   # clear intent, no loop
+python state_machine_trace.py --runaway             # the infinite loop, and the guard
+python state_machine_trace.py --quiet               # results only</div>
+
+<h2>9. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Fundamentals Check</h3>
+
+<div class="quiz">
+<div class="q">1. In one sentence, what is the difference between a chain and a state machine?</div>
+<button data-correct="false">A state machine uses an LLM to decide the next step; a chain uses fixed code.</button>
+<button data-correct="true">A state machine's edges are allowed to point backwards, so it can return to an earlier step with more information in the state. A chain only goes forward.</button>
+<button data-correct="false">A state machine runs steps in parallel; a chain runs them one at a time.</button>
+<button data-correct="false">A state machine persists its state to a database; a chain keeps it in memory.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. The chain knew it was confused — <code>confident = False</code> was in the state — and approved the refund anyway. Why?</div>
+<button data-correct="false">Because the classifier was too simple and needed a better model.</button>
+<button data-correct="true">Because a chain only has forward arrows. From <code>classify</code> the only available edge pointed at <code>lookup_order</code>; there was no arrow meaning "ask a question and come back". With nowhere to express uncertainty, guessing is the only move left.</button>
+<button data-correct="false">Because the state was overwritten by the next node before the decision was made.</button>
+<button data-correct="false">Because the 30-day policy check passed, which overrode the low confidence.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Your agent has a clarification loop. What must it have, and what does <em>not</em> count?</div>
+<button data-correct="false">A <code>recursion_limit</code> setting — that's what it's for.</button>
+<button data-correct="true">An exit condition guaranteed to fire — e.g. "give up after 2 questions and hand to a human". A step limit is a <em>backstop</em>: if it's what stopped your agent, you have a bug, not a design. "Loop until the model is confident" is not an exit condition, because a genuinely ambiguous message keeps it confused forever while every turn costs an LLM call.</button>
+<button data-correct="false">A timeout on the overall run, so it can never exceed the latency budget.</button>
+<button data-correct="false">A confidence threshold the model must exceed before proceeding.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. How do you tell whether a workflow needs a graph at all?</div>
+<button data-correct="false">Count the tools — more than three and you need orchestration.</button>
+<button data-correct="true">Count the backward edges. Zero means you have a pipeline, so build a pipeline. One or more means you have a state machine whether or not you use a framework — and at that point a framework is bookkeeping you don't have to write yourself.</button>
+<button data-correct="false">Check whether an LLM is in the loop; if so, you need a graph.</button>
+<button data-correct="false">Check whether the workflow takes longer than a single request timeout.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Retail, insurance and fintech all use the same gather/check-loop-then-decide shape. What actually differs?</div>
+<button data-correct="false">The number of nodes — regulated domains need more validation steps.</button>
+<button data-correct="true">The exit condition, and in each case it comes from the business rather than engineering: customer patience (2 questions), an underwriting deadline (weeks), a regulatory clock (fixed by network rules). The interesting decisions in agent design are "when does this stop, and who decided that" — not "which framework".</button>
+<button data-correct="false">The state schema — insurance needs bitemporal fields the others don't.</button>
+<button data-correct="false">Whether the loop is implemented with a conditional edge or a while loop.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Why do state reducers matter once nodes can run in parallel?</div>
+<button data-correct="false">They compress the state so it fits in the checkpoint store.</button>
+<button data-correct="true">Because two parallel nodes may write the same field. Plain overwrite means last-writer-wins and the result depends on timing; a declared reducer (append for lists, overwrite for scalars) makes the merge deterministic. It's the same problem as concurrent row writes, and the same answer as an atomic <code>UPDATE ... SET x = x + 1</code> instead of read-modify-write.</button>
+<button data-correct="false">They let the graph resume from a checkpoint without replaying earlier nodes.</button>
+<button data-correct="false">They enforce the state schema so nodes can't add unexpected fields.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want to walk through the engine line by line, sketch your own agent's graph, or work out where its exit conditions should come from? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../../week3/day6-7/0018-checkpoint-retrieval-redesign.html">&larr; Week 3 Day 6-7: ADR-003</a>
+<a href="../day2/0020-framework-comparison.html">Day 2: Which Framework &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

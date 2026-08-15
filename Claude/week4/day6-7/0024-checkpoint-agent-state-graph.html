@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0024 — Checkpoint: The Agent State Graph, and Justifying Every Edge (ADR-004)</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .adr { background:#fff; border:1px solid #e2ded8; border-radius:10px; padding:1.3rem 1.6rem; margin:1.6rem 0; box-shadow:0 1px 4px rgba(0,0,0,0.05); }
+  .adr h3 { color:#1f5f8b; margin-top:1.2rem; font-size:1.02rem; }
+  .adr h3:first-child { margin-top:0; }
+  .status { display:inline-block; background:#2e6b3e; color:#fff; font-size:0.75rem; font-weight:700; padding:0.2rem 0.6rem; border-radius:4px; letter-spacing:0.05em; }
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail { border-top:3px solid #1967d2; } .domains .ins { border-top:3px solid #6b3fa0; } .domains .fin { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; } .domains .ins .dhead { color:#6b3fa0; } .domains .fin .dhead { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Checkpoint — The Agent State Graph, and Justifying Every Edge</h1>
+<p class="subtitle">Week 4, Days 6–7 — ADR-004, with a number behind each decision</p>
+
+<p>The Week 4 checkpoint is: <em>diagram your agent's state graph and justify each edge.</em> The diagram is the easy half. The justification is the point — and every edge below traces to a number from Days 1–5.</p>
+
+<h2>1. The Graph</h2>
+
+<svg viewBox="0 0 760 380" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs>
+    <marker id="g1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker>
+    <marker id="g2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#a8451f"/></marker>
+  </defs>
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">RETAIL SUPPORT AGENT &#8212; STATE GRAPH</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">6 nodes. Every node is a checkpoint write. Backward edges in orange.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <rect x="24" y="66" width="118" height="38" rx="6" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="83" y="82" text-anchor="middle" font-weight="700" fill="#1f5f8b">classify</text>
+    <text x="83" y="95" text-anchor="middle" fill="#777">intent + confidence</text>
+
+    <rect x="24" y="150" width="118" height="38" rx="6" fill="#fdf4ef" stroke="#a8451f" stroke-width="1.5"/>
+    <text x="83" y="166" text-anchor="middle" font-weight="700" fill="#a8451f">ask_clarify</text>
+    <text x="83" y="179" text-anchor="middle" fill="#777">max 2 &#183; then hand off</text>
+    <path d="M83,106 L83,146" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+    <path d="M142,160 C176,160 176,96 146,86" fill="none" stroke="#a8451f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#g2)">
+      <animate attributeName="stroke-dashoffset" from="28" to="0" dur="1.4s" repeatCount="indefinite"/></path>
+    <text x="150" y="128" fill="#a8451f" font-weight="700" font-size="9">loop 1</text>
+
+    <rect x="212" y="66" width="118" height="38" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="271" y="82" text-anchor="middle" fill="#333" font-weight="700">lookup_order</text>
+    <text x="271" y="95" text-anchor="middle" fill="#777">idempotent read</text>
+    <path d="M144,85 L208,85" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+
+    <rect x="400" y="66" width="118" height="38" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="459" y="82" text-anchor="middle" fill="#333" font-weight="700">check_policy</text>
+    <text x="459" y="95" text-anchor="middle" fill="#777">30-day window</text>
+    <path d="M332,85 L396,85" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+
+    <rect x="588" y="40" width="148" height="38" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="662" y="56" text-anchor="middle" fill="#2e6b3e" font-weight="700">issue_refund</text>
+    <text x="662" y="69" text-anchor="middle" fill="#555">idempotency key required</text>
+    <path d="M520,80 C550,80 556,62 584,60" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+    <text x="524" y="52" fill="#555" font-size="9">&#8804; $170</text>
+
+    <rect x="588" y="98" width="148" height="38" rx="6" fill="#fdf4ef" stroke="#a8451f" stroke-width="1.5"/>
+    <text x="662" y="114" text-anchor="middle" fill="#a8451f" font-weight="700">human_approve</text>
+    <text x="662" y="127" text-anchor="middle" fill="#555">interrupt_before</text>
+    <path d="M520,92 C550,92 556,114 584,116" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+    <text x="524" y="140" fill="#a8451f" font-size="9">&gt; $170</text>
+    <path d="M662,140 C662,164 700,164 700,80" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+    <text x="668" y="160" fill="#777" font-size="9">approved &#8594; issue</text>
+  </g>
+
+  <line x1="24" y1="210" x2="736" y2="210" stroke="#e2ded8"/>
+  <text x="24" y="234" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#333">Every edge, and the number behind it</text>
+  <g font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">
+    <text x="24" y="256">&#8226; <tspan font-weight="700">classify &#8594; ask_clarify</tspan> when unclear &#8212; a chain guesses here, and guessed a refund for a tracking request (Day 1)</text>
+    <text x="24" y="276">&#8226; <tspan font-weight="700">ask_clarify &#8594; classify</tspan>, max 2 &#8212; customers won&#8217;t answer a third. The exit condition, not the step limit (Day 1)</text>
+    <text x="24" y="296">&#8226; <tspan font-weight="700">check_policy &#8594; human_approve</tspan> above $170 &#8212; derived, not chosen. $56 is the textbook answer and ignores reviewer capacity (Day 3)</text>
+    <text x="24" y="316">&#8226; <tspan font-weight="700">issue_refund</tspan> carries an idempotency key &#8212; without it, ambiguous failures duplicate refunds (Day 4)</text>
+    <text x="24" y="336">&#8226; <tspan font-weight="700">6 nodes, not 12</tspan> &#8212; reliability multiplies (94.1% vs 88.6%) and checkpoint storage is quadratic (113 GB vs 482 GB) (Days 4, 5)</text>
+  </g>
+  <text x="24" y="366" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">Five edges, five numbers. That is what &#8220;justify each edge&#8221; means.</text>
+</svg>
+
+<h2>2. ADR-004</h2>
+
+<div class="adr">
+<p><span class="status">ACCEPTED</span> &nbsp; <strong>ADR-004: Agent orchestration — framework, control flow, and durable state</strong></p>
+
+<h3>Context</h3>
+<p>ADR-002 chose pgvector; ADR-003 designed the retrieval pipeline. Neither says how the <em>agent</em> around them is structured. In practice that had defaulted to a linear chain: classify, look up, check policy, act. It works until the first ambiguous message, at which point it guesses — and we measured it guessing a refund for a customer who wanted a tracking number.</p>
+<p>Three requirements forced this ADR. <strong>Ambiguous input</strong> needs a clarification loop, which a chain cannot express. <strong>Refunds above a threshold</strong> need human approval, which needs a pause of hours. And <strong>runs must survive a restart</strong>, because an underwriting case can be two weeks long.</p>
+
+<h3>Decision</h3>
+<ol>
+<li><strong>State machine, not a chain.</strong> LangGraph, with explicit nodes and conditional edges.</li>
+<li><strong>Six nodes, deliberately few.</strong> Every additional node costs reliability multiplicatively and checkpoint storage quadratically.</li>
+<li><strong>One clarification loop</strong>, exit after 2 questions to a human handoff. The step limit is a backstop, not the exit condition.</li>
+<li><strong>Human approval above $170</strong>, derived from review cost, error rate and reviewer capacity — not chosen in a meeting.</li>
+<li><strong>Idempotency keys on every side-effecting call</strong>, shipped <em>before</em> retries, plus exponential backoff with jitter and a circuit breaker on error rate.</li>
+<li><strong>Postgres checkpointing</strong> on the ADR-002 instance, delta format, state trimmed of raw tool payloads, partitioned by <code>created_at</code>.</li>
+</ol>
+
+<h3>Consequences</h3>
+<p><strong>Accepted costs.</strong> A framework dependency with a release cadence and abstractions the team must eventually read the source of. A review queue at ~1,818 items/month needing 2 reviewers. 29 GB/month of checkpoint storage and 12 writes/sec of additional load on the OLTP instance — 0.5% of existing write traffic.</p>
+<p><strong>Accepted risks.</strong> The $170 threshold rests on an assumed 4% agent error rate that we have not yet measured directly. The reviewer-fatigue curve is a model, not an observation. Both are named in §5 as the first things to revisit.</p>
+<p><strong>What we gain.</strong> Ambiguous requests get a question instead of a guess. Runs survive restarts and multi-day pauses. Duplicate side effects go to zero. And the control flow is explicit, which is what makes "why did the agent do that" answerable.</p>
+
+<h3>Alternatives considered</h3>
+<table class="matrix-table">
+  <tr><th>Alternative</th><th>Why not</th></tr>
+  <tr><td><strong>Keep the chain</strong></td><td>Cannot express a backward edge. On the four requirement changes we scored it 12 damage points against the graph's 0 — three of the four need a rewrite.</td></tr>
+  <tr><td><strong>Raw API calls, no framework</strong></td><td>Genuinely tempting, and correct if we needed nothing else — it's ~40 lines we'd own outright. But "pause for a human" and "survive a crash" are the same requirement, and hand-rolling durable resumable state is the single biggest chunk of work on the list.</td></tr>
+  <tr><td><strong>CrewAI / multi-agent</strong></td><td>Control flow becomes emergent — who speaks next and when it stops are decided at runtime. Fine for exploration, hard to defend when someone asks why a decision was made. For insurance and fintech that rules it out.</td></tr>
+  <tr><td><strong>12 smaller, cleaner nodes</strong></td><td>88.6% end-to-end instead of 94.1%, and 482 GB/month of checkpoints instead of 113 GB. Decomposition helps readability and costs reliability and storage — twice.</td></tr>
+  <tr><td><strong>Redis for checkpoints</strong></td><td>Solves a write-rate problem we don't have (0.5% of OLTP) and re-creates the dual-write problem — now between an action and the record of it.</td></tr>
+  <tr><td><strong>Review every refund</strong></td><td>Two reviewers can process 6,400 items/month. Routing 120,000 means 113,600 auto-approved on timeout, and the 6,400 seen arrive at 40/hour where catch rate has fallen to 25%. It costs more and controls less.</td></tr>
+</table>
+
+<h3>What would change our mind</h3>
+<ul>
+<li><strong>Measured error rate materially above 4%</strong> → the $170 threshold drops and the review queue grows; re-solve for staffing before changing the number.</li>
+<li><strong>Clarification loop resolving under ~40%</strong> → the loop isn't earning its latency; hand off on first ambiguity instead.</li>
+<li><strong>Checkpoint writes exceeding ~10% of OLTP</strong> → separate instance, or Redis hot tier with Postgres durable.</li>
+<li><strong>No pause and no durability requirement</strong> → drop the framework. Raw is cheaper and we'd own all of it.</li>
+<li><strong>A second genuinely independent specialist</strong> (fraud, say) → revisit crew-style orchestration, but only where the audit requirement is absent.</li>
+</ul>
+</div>
+
+<h2>3. The Numbers, One Table</h2>
+
+<table class="matrix-table">
+  <tr><th>Decision</th><th>Retail</th><th>Insurance</th><th>Set by</th></tr>
+  <tr><td>Nodes</td><td>6 → 94.1% end-to-end</td><td>14 → 81% end-to-end</td><td>Day 4 — reliability multiplies</td></tr>
+  <tr><td>Loop exit</td><td>2 questions (patience)</td><td>Deadline (weeks)</td><td>Day 1 — from the business, not engineering</td></tr>
+  <tr><td>Approval threshold</td><td>$170, 1.5% reviewed</td><td>$16,937, capacity-bound</td><td>Day 3 — derived, then capped by staffing</td></tr>
+  <tr><td>Retry ceiling</td><td>98.5% (25% permanent)</td><td>—</td><td>Day 4 — retries can't fix permanent failures</td></tr>
+  <tr><td>Duplicate cost avoided</td><td>—</td><td>$67,392/month</td><td>Day 4 — idempotency keys</td></tr>
+  <tr><td>Checkpoint storage</td><td>29 GB/mo delta</td><td>57 GB (7 yrs) vs 458 GB full</td><td>Day 5 — quadratic without deltas</td></tr>
+  <tr><td>Checkpoint write load</td><td>0.5% of OLTP</td><td>negligible</td><td>Day 5 — measured, not assumed</td></tr>
+</table>
+
+<h2>4. Three Domains</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">6 nodes &#183; 1 loop<br>$170 gate &#183; 3-day retention</span></p>
+    <p><strong>The case where a framework is nearly over-engineering.</strong> Sessions last minutes, a lost conversation is an annoyance.</p>
+    <p>Worth saying so in an interview: reaching for LangGraph here is defensible mainly because of the approval pause, not the loop.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">14 nodes &#183; evidence loop<br>capacity-bound gate &#183; 7-yr retention</span></p>
+    <p><strong>Every expensive box is ticked.</strong> Multi-week runs, mandatory review, an audit trail, and a duplicate side effect that is a bound policy.</p>
+    <p>The checkpoint history <em>is</em> the audit trail — which makes delta checkpointing a design decision, not an optimisation.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><span class="kv">9 nodes &#183; evidence loop<br>$465 gate &#183; 180-day retention</span></p>
+    <p><strong>The clock is the constraint.</strong> A 39-day review queue against a deadline measured in days is an automatic loss, not a cost.</p>
+    <p>The dead-letter path is a compliance control here: a run that fails and needs manual restart may miss the window.</p>
+  </div>
+</div>
+
+<h2>5. What I'd Revisit First</h2>
+
+<table class="matrix-table">
+  <tr><th>Assumption</th><th>Confidence</th><th>How to check it</th></tr>
+  <tr><td><strong>4% agent error rate</strong></td><td class="no">Low — assumed</td><td>It drives the approval threshold, the retry economics, and the reliability maths. Sample 200 actions and grade them. This is the single highest-value measurement in Week 4.</td></tr>
+  <tr><td>Reviewer fatigue curve</td><td class="no">Low — a model</td><td>Compare catch rate at high and low queue depth on real reviewers. The shape matters more than the constant.</td></tr>
+  <tr><td>75% of failures are transient</td><td class="partial">Medium</td><td>Classify a week of failures. It sets the retry ceiling directly.</td></tr>
+  <tr><td>State growth of 3 KB/step</td><td class="partial">Medium</td><td>Log checkpoint sizes for a day. The quadratic makes this worth measuring rather than estimating.</td></tr>
+  <tr><td>Clarification loop resolves ambiguity</td><td class="partial">Medium</td><td>What fraction of clarifications produce a confident classification? If it's low, the loop is buying latency and nothing else.</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">The honest summary of this week</div>
+Three of the six ADR decisions depend on <strong>one number nobody has measured: the agent's actual error rate.</strong> The approval threshold, the retry economics, and the value of the review queue all move with it.
+<p style="margin-top:0.7rem;margin-bottom:0;">The models are sound and their sensitivity is explicit, which is the useful state to be in — but "we assumed 4%" is the sentence to volunteer rather than have extracted. Sampling 200 actions and grading them is a week of work and it firms up half this document.</p>
+</div>
+
+<h2>6. Interview Drills</h2>
+
+<details>
+<summary>"Walk me through how you'd design an agent for customer refunds."</summary>
+<div class="details-body">
+<p>"I'd start by asking what it has to do when it's <em>unsure</em>, because that decides the shape. If there's no answer to that, a chain is fine and simpler. If it needs to ask a clarifying question and continue, that's a backward edge and you have a state machine whether or not you use a framework.</p>
+<p>Then I'd count the nodes and keep it small. Reliability multiplies — six nodes at 99% each is 94.1% end to end, twelve is 88.6% — and full-checkpoint storage is quadratic in step count, so splitting a node costs you twice. That runs against the instinct to decompose, and it's worth being explicit about the tradeoff.</p>
+<p>The approval gate I'd derive rather than pick. Review cost over error rate gives a first threshold, but that formula assumes reviewers never get tired. Once you model catch rate falling with queue depth, the optimum moves — on our numbers from $56 to $170 — and reviewing everything turns out to cost more and control less, because at 40 items an hour nobody's reading them.</p>
+<p>Then idempotency keys before retries, backoff with jitter, and Postgres checkpointing on the instance we already have — mostly because the checkpoint and the business record can then commit in one transaction, which avoids re-creating a dual-write problem between an action and the record of it."</p>
+</div>
+</details>
+
+<details>
+<summary>"Why not just use CrewAI? It's much less code."</summary>
+<div class="details-body">
+<p>"For exploration I might. The thing I'd want to be clear about is what you give up: control flow becomes emergent. Who speaks next, when it stops, and how disagreement resolves are decided by the framework and the models at runtime.</p>
+<p>That's fine until someone asks why a particular decision was made, and the honest answer is 'the agents talked until they converged'. For insurance and fintech that's disqualifying on its own — you need the path to be a recorded fact, not an emergent property.</p>
+<p>There's one row where crew is genuinely the natural answer, which is adding independent parallel specialists. If that's the requirement and there's no audit constraint, I'd use it and scope it tightly: pin who may speak, cap the turns, make the stopping rule explicit."</p>
+</div>
+</details>
+
+<details>
+<summary>"Your agent double-refunded a customer. What happened and how do you prevent it?"</summary>
+<div class="details-body">
+<p>"Almost certainly an ambiguous failure: we called the payments API, the connection dropped before the response, and the retry issued a second refund. The request landed; we just never saw the acknowledgement.</p>
+<p>The important framing is that this <em>isn't a reliability problem</em> — it's a correctness problem created by the reliability fix. Retries improve availability and damage correctness, and only idempotency lets you have both. So 'add retries' is never a complete answer; it's 'retries plus idempotency keys, and here's which operations need them.'</p>
+<p>The fix is a UUID derived from the logical operation — this refund for this order — sent with the request and stored under a unique constraint at the receiver. The common way to get it wrong is generating the key per attempt, which is no key at all.</p>
+<p>And the ordering matters: keys ship before retries. We modelled it for underwriting, where 0.156% of runs hit an ambiguous failure — four duplicate bound policies a month at $18,000 each, or $67,392, against a fix that's a header."</p>
+</div>
+</details>
+
+<details>
+<summary>"How much does checkpointing cost, and why Postgres?"</summary>
+<div class="details-body">
+<p>"Less than people expect on write rate and more than they expect on storage, and both surprises are worth knowing.</p>
+<p>On write rate: 6 steps at 1.3M runs a month is 7.8M writes, about 12 a second at peak. Against 2,400/sec of existing OLTP that's 0.5% — noise. People reach for Redis to solve a problem they haven't measured.</p>
+<p>On storage: the usual estimate is runs times steps times state size, and that's wrong because state grows as the run proceeds. Writing the full state each step gives you 1+2+3+…+N, so it's quadratic. At six steps that's 3.6× the naive number; at twenty it's 11×. Delta checkpoints bring it back to linear.</p>
+<p>Postgres because the checkpoint and the business record commit in one transaction. Split them and you've re-created the dual-write problem, except the drift is now between an action and the record of it — which is much worse to be inconsistent about than a stale index. Plus one backup and one restore: a restore that recovers business data but not agent state leaves in-flight runs pointing at rows that moved.</p>
+<p>I'd move off Postgres if checkpoint writes became a large share of a shared instance's load, or if state were large and hot and read every step. And if runs are short enough that nothing needs to survive, I wouldn't checkpoint at all — an in-memory saver is a legitimate choice that nobody suggests."</p>
+</div>
+</details>
+
+<h2>7. Companion Scripts</h2>
+
+<table class="matrix-table">
+  <tr><th>Decision</th><th>Script</th></tr>
+  <tr><td>Chain or graph; where the loops go</td><td><code>week4/day1/state_machine_trace.py</code></td></tr>
+  <tr><td>Which framework, and whether any</td><td><code>week4/day2/framework_chooser.py</code></td></tr>
+  <tr><td>Where the approval gate goes</td><td><code>week4/day3/approval_economics.py</code></td></tr>
+  <tr><td>Node count, retries, idempotency</td><td><code>week4/day4/reliability_math.py</code></td></tr>
+  <tr><td>Checkpoint storage and write load</td><td><code>week4/day5/checkpoint_sizing.py</code></td></tr>
+  <tr><td>Where the vectors live (ADR-002)</td><td><code>week2/day3/sizing_ladder.py</code></td></tr>
+  <tr><td>Retrieval pipeline (ADR-003)</td><td><code>week3/day1/chunk_cost_sweep.py</code>, <code>week3/day3/rerank_economics.py</code></td></tr>
+</table>
+
+<div class="nav">
+<a href="../day5/0023-state-persistence.html">&larr; Day 5: State Persistence</a>
+<a href="../../week5/day1/0025-context-windows-tokens-cost.html">Week 5 Day 1: LLM Fundamentals &rarr;</a>
+</div>
+
+</body>
+</html>

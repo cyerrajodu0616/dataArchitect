@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0022 — Error Handling: Why Reliable Steps Make an Unreliable Agent</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; } .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail { border-top:3px solid #1967d2; } .domains .ins { border-top:3px solid #6b3fa0; } .domains .fin { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; } .domains .ins .dhead { color:#6b3fa0; } .domains .fin .dhead { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Error Handling — Why Reliable Steps Make an Unreliable Agent</h1>
+<p class="subtitle">Week 4, Day 4 — compounding failure, the three kinds of error, and the retry that costs you money</p>
+
+<div class="plain">
+<div class="label">Start with the arithmetic that surprises people</div>
+<p>A step that works <strong>99%</strong> of the time is a good step.</p>
+<p>Six of them in a row work <code>0.99<sup>6</sup></code> = <strong>94.1%</strong> of the time.<br>
+Twelve work <strong>88.6%</strong>. Twenty work <strong>81.8%</strong>.</p>
+<p style="margin-bottom:0;">Nothing went wrong. <strong>Reliability multiplies along a path</strong>, so adding steps makes an agent less reliable even when every single step is excellent.</p>
+</div>
+
+<div class="anchor">
+<div class="label">You've met this before</div>
+It's the same maths as a multi-stage ETL pipeline where each stage has a small failure rate, or a microservice call chain. The difference is that agent steps are <em>LLM calls</em> — so each retry costs money, takes seconds, and may produce a <em>different</em> answer than the attempt before it.
+</div>
+
+<h2>1. What Step Count Actually Costs</h2>
+
+<div class="code-inline">python reliability_math.py --domain retail
+
+    steps   end-to-end    failed runs/mo
+  --------------------------------------
+        1        99.0%            13,000
+        3        97.0%            38,611
+        6        94.1%            76,076   &lt;-- yours
+       12        88.6%           147,700
+       20        81.8%           236,721
+       30        74.0%           338,390</div>
+
+<div class="verdict">
+<div class="label">The design consequence, which runs against instinct</div>
+<strong>The cheapest reliability work is deleting a step.</strong> Every node you add is a multiplication, not an addition.
+<p style="margin-top:0.7rem;margin-bottom:0;">That runs directly against the instinct to decompose an agent into many small, clean, single-responsibility nodes. Decomposition is good for <em>readability</em> and bad for <em>reliability</em>, and the tradeoff is real. Prefer fewer, bigger nodes than you would in ordinary code — and when someone proposes splitting a node in a design review, the honest question is "what does that do to end-to-end success?"</p>
+</div>
+
+<h2>2. Three Kinds of Failure — and Only One Is Easy</h2>
+
+<table class="matrix-table">
+  <tr><th>Kind</th><th>In plain words</th><th>What to do</th></tr>
+  <tr>
+    <td><strong>Transient</strong></td>
+    <td>The network blipped. The API returned 503. You got rate limited.</td>
+    <td class="yes">Retry. It'll probably work.</td>
+  </tr>
+  <tr>
+    <td><strong>Permanent</strong></td>
+    <td>The input is invalid. The policy doesn't exist. You lack permission.</td>
+    <td class="no">Don't retry. It will fail identically every time and each attempt is billed.</td>
+  </tr>
+  <tr>
+    <td><strong>Ambiguous</strong></td>
+    <td>You sent the request and never saw the response. <em>Did the refund go out or not?</em></td>
+    <td class="no">This is the hard one. §4.</td>
+  </tr>
+</table>
+
+<div class="code-inline">    retries   end-to-end    failed/mo   extra calls/mo   extra $/mo
+  ------------------------------------------------------------------
+          0        94.1%       76,076                0            0
+          1        98.5%       19,812           78,000          312
+          2        98.5%       19,382          156,000          624
+          3        98.5%       19,379          234,000          936
+
+  CEILING: even with infinite retries you reach 98.5%, because 25% of
+  failures are PERMANENT and retrying them buys the same error at full price.</div>
+
+<div class="caution">
+<div class="label">Read the ceiling, and the flat column</div>
+The first retry buys a lot: 94.1% → 98.5%. The second and third buy <strong>essentially nothing</strong> and cost $312/month each. That's because everything retryable was already recovered on attempt two, and what's left is permanent.
+<p style="margin-top:0.7rem;margin-bottom:0;">So the first question is not <em>"how many retries?"</em> — it's <strong>"can I tell transient from permanent?"</strong> A policy that can't distinguish them spends 25% of its retry budget on requests that are guaranteed to fail, and no amount of tuning fixes that.</p>
+</div>
+
+<h2>3. The Failure Mode Specific to Agents</h2>
+
+<p>Classical retries assume the operation is deterministic — retry it and you get the same thing, or you get a success. LLM steps break that assumption in two directions:</p>
+
+<table class="matrix-table">
+  <tr><th>Situation</th><th>Why it's different</th><th>What to do</th></tr>
+  <tr>
+    <td><strong>The model returned malformed output</strong></td>
+    <td>A plain retry re-rolls the dice and might work. But you learned nothing.</td>
+    <td>Retry <em>with the error in the prompt</em> — "your last output failed validation because X". Far higher success than a blind retry.</td>
+  </tr>
+  <tr>
+    <td><strong>The model called the wrong tool</strong></td>
+    <td>Not a failure at all from the runtime's point of view. It succeeded, at the wrong thing.</td>
+    <td>A validation node after the tool call. This is a <em>correctness</em> check, and retry logic will never see it.</td>
+  </tr>
+  <tr>
+    <td><strong>The model loops</strong></td>
+    <td>Day 1's runaway. Each turn "succeeds"; the run never ends.</td>
+    <td>A step limit as backstop, and a real exit condition. Not a retry problem.</td>
+  </tr>
+</table>
+
+<div class="verdict">
+<div class="label">The retry that's actually worth building</div>
+<strong>Retry with the error fed back in.</strong> A blind retry of a malformed-output failure re-rolls the dice; a retry that says <em>"that failed schema validation: <code>days_since_delivery</code> must be an integer"</em> usually succeeds first time. It costs one extra sentence in the prompt and converts a coin flip into a fix.
+</div>
+
+<h2>4. The Ambiguous Failure, and Why Retries Make Things Worse</h2>
+
+<div class="plain">
+<div class="label">The scenario, in plain words</div>
+<p>Your agent calls the refund API. The connection drops before the response comes back.</p>
+<p><strong>Did the refund go out?</strong> You genuinely don't know.</p>
+<p style="margin-bottom:0;">Retry, and you might refund them twice. Don't retry, and you might have refunded nobody. Neither choice is safe — <em>without an idempotency key</em>. With one, both are.</p>
+</div>
+
+<div class="code-inline">python reliability_math.py --domain insurance
+
+                                  duplicate side effects       $/month
+  --------------------------------------------------------------------
+  without idempotency keys                             4        67,392
+  with idempotency keys                                0             0
+
+  0.156% of runs hit an ambiguous failure. That sounds small.
+  At 2,400 runs a month and $18,000 per side effect it is $67,392
+  a month, and the fix is a UUID in a header.</div>
+
+<svg viewBox="0 0 760 250" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs><marker id="e1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker></defs>
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE AMBIGUOUS FAILURE</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">The request arrived. The response didn&#8217;t. The agent cannot tell these two worlds apart.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <rect x="24" y="62" width="120" height="34" rx="5" fill="#fff" stroke="#c9d6e2"/>
+    <text x="84" y="83" text-anchor="middle" fill="#333">agent</text>
+    <line x1="146" y1="79" x2="200" y2="79" stroke="#8a8578" stroke-width="1.5" marker-end="url(#e1)"/>
+    <text x="152" y="72" fill="#555" font-size="9.5">refund $240</text>
+    <rect x="204" y="62" width="130" height="34" rx="5" fill="#f0f6f1" stroke="#2e6b3e"/>
+    <text x="269" y="83" text-anchor="middle" fill="#2e6b3e" font-weight="700">payments API</text>
+    <text x="350" y="83" fill="#2e6b3e" font-size="10">refund ISSUED &#10003;</text>
+
+    <path d="M204,104 L150,104" stroke="#a8451f" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#e1)"/>
+    <text x="212" y="118" fill="#a8451f" font-size="10" font-weight="700">response lost &#8212; connection dropped</text>
+  </g>
+
+  <line x1="24" y1="134" x2="736" y2="134" stroke="#e2ded8"/>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="156" font-weight="700" fill="#a8451f">without an idempotency key</text>
+    <rect x="250" y="144" width="200" height="16" rx="3" fill="#a8451f" opacity="0">
+      <animate attributeName="opacity" from="0" to="0.9" dur="0.5s" fill="freeze" begin="1.0s"/></rect>
+    <text x="258" y="156" fill="#fff" font-weight="700" font-size="10" opacity="0">retry &#8594; SECOND refund
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.2s"/></text>
+    <text x="466" y="156" fill="#a8451f" opacity="0">$480 out the door
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.4s"/></text>
+
+    <text x="24" y="186" font-weight="700" fill="#2e6b3e">with an idempotency key</text>
+    <rect x="250" y="174" width="200" height="16" rx="3" fill="#2e6b3e" opacity="0">
+      <animate attributeName="opacity" from="0" to="0.9" dur="0.5s" fill="freeze" begin="1.7s"/></rect>
+    <text x="258" y="186" fill="#fff" font-weight="700" font-size="10" opacity="0">retry &#8594; same key, deduped
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="1.9s"/></text>
+    <text x="466" y="186" fill="#2e6b3e" opacity="0">$240, and you learn it succeeded
+      <animate attributeName="opacity" from="0" to="1" dur="0.5s" fill="freeze" begin="2.1s"/></text>
+  </g>
+
+  <text x="24" y="222" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">A duplicate side effect is <tspan font-weight="700">not a reliability problem</tspan>. It is a <tspan font-weight="700">correctness problem created by the reliability fix.</tspan></text>
+  <text x="24" y="240" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Retries improve availability and damage correctness. Idempotency is what lets you have both.</text>
+</svg>
+
+<div class="caution">
+<div class="label">Say this precisely — it's the distinction interviewers listen for</div>
+<strong>"Add retries" is not a complete answer to "how do you handle failures".</strong> The complete answer is <em>"retries plus idempotency keys, and here's which operations need them"</em> — because retries alone make availability better and correctness worse.
+<p style="margin-top:0.7rem;margin-bottom:0;">And note the order: <strong>idempotency keys go in before retries, not after.</strong> Shipping retries first means shipping the duplicate-side-effect bug and discovering it in production, on the operations that cost the most.</p>
+</div>
+
+<div class="anchor">
+<div class="label">The idempotency key is just a primary key</div>
+Generate a UUID per logical operation, send it with the request, and have the receiver store it with a unique constraint. Second request with the same key returns the first result instead of doing the work again.
+<p style="margin-top:0.7rem;margin-bottom:0;">You've built this — it's an upsert with a natural key, or a dedup table on a stream. The only new thing is remembering that the key must be derived from the <em>logical operation</em> (this refund for this order), not generated fresh on each attempt. A key regenerated per attempt is no key at all, and it's the most common way this gets implemented wrong.</p>
+</div>
+
+<h2>5. Retry Storms — Why Backoff Alone Isn't Enough</h2>
+
+<p>A dependency has a 5-second outage. Everything in flight fails at the same instant. Now they all retry.</p>
+
+<table class="matrix-table">
+  <tr><th>Strategy</th><th>What happens</th></tr>
+  <tr><td><strong>Fixed 1s delay</strong></td><td class="no">Every client retries at the same moment. The recovering dependency is hit by the full load at once and falls over again.</td></tr>
+  <tr><td><strong>Exponential backoff, no jitter</strong></td><td class="no"><strong>Barely better.</strong> They all failed at the same instant, so they all wait 1s, then 2s, then 4s — <em>in lockstep</em>. They stay synchronised.</td></tr>
+  <tr><td><strong>Exponential backoff + full jitter</strong></td><td class="yes">Retries spread across the window. Load arrives smoothly and the dependency recovers.</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">The one-line fix people leave out</div>
+<code>sleep(random.uniform(0, backoff))</code> instead of <code>sleep(backoff)</code>.
+<p style="margin-top:0.7rem;margin-bottom:0;">Exponential backoff on its own doesn't break the synchronisation that caused the storm — <strong>jitter is what does</strong>. It's the difference between a dependency that recovers in seconds and one that oscillates for an hour. If you name only one of these in an interview, name jitter, because it's the half that gets forgotten.</p>
+</div>
+
+<p>Above both sits the <strong>circuit breaker</strong>: after N consecutive failures, stop calling entirely for a cooling-off period. Retries assume the dependency is basically healthy. A breaker is what you have for when that assumption is false.</p>
+
+<div class="caution">
+<div class="label">The breaker also closes Day 3's gap</div>
+Day 3's approval model priced errors one at a time and explicitly couldn't handle <strong>correlated failure</strong> — a bug that makes the agent wrong the same way 4,000 times isn't 4,000 independent small losses, it's one incident.
+<p style="margin-top:0.7rem;margin-bottom:0;">A circuit breaker on the <em>error rate</em>, not just on connection failures, is what stops that at 40 instead of 4,000. Trip it when the agent's own confidence or validation-failure rate spikes, and route to humans until someone looks. That's the control the threshold arithmetic couldn't provide.</p>
+</div>
+
+<h2>6. Three Domains</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">6 steps &#183; 99% &#183; 94.1%<br>1.3M runs/mo</span></p>
+    <p><strong>76,000 failed conversations a month</strong> before any retries. Short graphs, but volume turns a small per-step rate into a staffing problem.</p>
+    <p>Side effects are cheap ($42), so the priority is availability: retry aggressively, keep the dead-letter path automated.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">14 steps &#183; 98.5% &#183; 81%<br>2,400 runs/mo</span></p>
+    <p><strong>One run in five needs intervention.</strong> Long graphs are the problem here — this is where "delete a step" pays most.</p>
+    <p>And a duplicate side effect is a <strong>policy bound twice</strong> — a rescission and a regulatory conversation, not a refund. 4/month × $18k = <strong>$67,392</strong>.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><span class="kv">9 steps &#183; 99.2% &#183; 93%<br>45k runs/mo</span></p>
+    <p>Middle everything, but with a hard deadline. A run that fails and needs manual restart may miss the network window.</p>
+    <p><strong>The cost of a failed run isn't the retry — it's the automatic loss when the clock runs out.</strong> Which makes the dead-letter path a compliance control.</p>
+  </div>
+</div>
+
+<h2>7. What to Build, In Order</h2>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Do this</th><th>Why here</th></tr>
+  <tr><td>1</td><td><strong>Delete a step.</strong></td><td>Reliability multiplies, so this is the cheapest win available. Do it before tuning any policy.</td></tr>
+  <tr><td>2</td><td><strong>Classify the failure</strong> — transient / permanent / ambiguous.</td><td>A policy that can't tell them apart wastes 25% of its budget and cannot be made safe.</td></tr>
+  <tr><td>3</td><td><strong>Idempotency keys</strong> on every side-effecting operation.</td><td class="no"><strong>Before retries, not after.</strong> Retries without keys actively make things worse.</td></tr>
+  <tr><td>4</td><td><strong>Exponential backoff with jitter.</strong></td><td>Backoff without jitter keeps clients synchronised and is barely better than a fixed delay.</td></tr>
+  <tr><td>5</td><td><strong>Circuit breaker</strong>, on error rate as well as connection failure.</td><td>For when the dependency is genuinely down — and for the correlated-failure case Day 3 couldn't price.</td></tr>
+  <tr><td>6</td><td><strong>A dead-letter path</strong> with state attached.</td><td>Some runs won't succeed. They need somewhere a human looks, and the state must be there so the run can be <em>resumed</em> rather than restarted from scratch.</td></tr>
+</table>
+
+<h2>8. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it does</th></tr>
+  <tr>
+    <td><code>week4/day4/reliability_math.py</code></td>
+    <td>Computes end-to-end success against step count, what retries buy back and the ceiling permanent failures impose, an <strong>idempotency simulation</strong> counting duplicate side effects and their dollar cost, and the retry-storm arithmetic showing why backoff without jitter doesn't help. <code>--domain</code>, <code>--steps</code>, <code>--step-success</code>, <code>--transient-share</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day4
+python reliability_math.py --domain retail       # 6 steps, 76k failed runs/mo
+python reliability_math.py --domain insurance    # 14 steps -> 81%, $67k of duplicates
+python reliability_math.py --steps 20            # what a 20-node graph costs you
+python reliability_math.py --transient-share 0.95   # if you could classify perfectly</div>
+
+<h2>9. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Error Handling Check</h3>
+
+<div class="quiz">
+<div class="q">1. Every node in your agent succeeds 99% of the time. Is the agent reliable?</div>
+<button data-correct="false">Yes — 99% per step is well within normal SLOs.</button>
+<button data-correct="true">It depends entirely on step count, because reliability multiplies. Six steps gives 94.1%, twelve gives 88.6%, twenty gives 81.8%. Nothing is broken — that's just what a product of probabilities does — which is why the cheapest reliability work is usually deleting a step.</button>
+<button data-correct="false">Yes, provided each node has retries configured.</button>
+<button data-correct="false">No — 99% is too low for any production system regardless of step count.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Adding a second and third retry barely improves end-to-end success but costs $312/month each. Why?</div>
+<button data-correct="false">Because retries are rate-limited, so later attempts often don't execute.</button>
+<button data-correct="true">Because everything retryable was already recovered by attempt two, and what remains is permanent — invalid input, missing records, permission errors. Those fail identically every time. The ceiling isn't set by retry count, it's set by the share of failures that are transient.</button>
+<button data-correct="false">Because the model returns the same wrong output each time it's called.</button>
+<button data-correct="false">Because backoff delays push later retries past the request timeout.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Your agent calls the refund API and the connection drops before the response. What's the right response?</div>
+<button data-correct="false">Retry — a dropped connection is transient by definition.</button>
+<button data-correct="false">Don't retry — you might double-refund, and a missed refund is recoverable.</button>
+<button data-correct="true">Neither is safe without an idempotency key, and both are safe with one. The key makes the retry a no-op if the first call landed, and a real call if it didn't — which is why keys go in <em>before</em> retries, not after.</button>
+<button data-correct="false">Query the payments API to check whether the refund exists, then decide.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Why is "a duplicate refund" not a reliability problem?</div>
+<button data-correct="false">It is one — duplicates happen when the system fails to deliver exactly-once semantics.</button>
+<button data-correct="true">Because it's a <em>correctness</em> problem created by the reliability fix. Retries improve availability and damage correctness; only idempotency lets you have both. Framing it as a reliability problem leads teams to tune retry counts, which cannot help.</button>
+<button data-correct="false">Because duplicates are caught downstream by reconciliation.</button>
+<button data-correct="false">Because it only occurs during genuine outages, which are rare.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. A dependency has a brief outage and everything in flight fails at once. Why doesn't exponential backoff fix the retry storm?</div>
+<button data-correct="false">Because exponential backoff increases total load by retrying more times.</button>
+<button data-correct="true">Because every client failed at the same instant, so they all wait 1s, then 2s, then 4s <em>in lockstep</em> — they stay synchronised and hit the recovering dependency together. Jitter is what breaks the synchronisation: <code>sleep(random.uniform(0, backoff))</code>. It's the half that gets forgotten.</button>
+<button data-correct="false">Because backoff delays exceed the circuit breaker's cooling-off period.</button>
+<button data-correct="false">It does fix it — the storm only happens with fixed delays.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. The model returns malformed JSON. What's better than a blind retry?</div>
+<button data-correct="false">Lowering the temperature and retrying, so output is more deterministic.</button>
+<button data-correct="true">Retry with the error fed back into the prompt — "that failed schema validation: <code>days_since_delivery</code> must be an integer". A blind retry re-rolls the dice; a retry carrying the error usually succeeds first time, for the cost of one extra sentence.</button>
+<button data-correct="false">Fall back to a larger model, which makes fewer formatting errors.</button>
+<button data-correct="false">Parse leniently and repair the JSON in code.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">7. Day 3's approval model couldn't price correlated failure. What closes that gap?</div>
+<button data-correct="false">A lower approval threshold, so more actions get human review.</button>
+<button data-correct="true">A circuit breaker on the <em>error rate</em>, not just on connection failures. A bug that makes the agent wrong the same way 4,000 times is one incident, not 4,000 independent losses — trip on a spike in validation failures or low confidence and route to humans until someone looks. That stops it at 40 instead of 4,000.</button>
+<button data-correct="false">More retries, so transient correlated failures self-resolve.</button>
+<button data-correct="false">Sampled after-the-fact audit, which is the Day 3 answer.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help classifying your failure types, adding idempotency keys to existing tool calls, or designing the dead-letter path so runs resume rather than restart? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day3/0021-human-in-the-loop.html">&larr; Day 3: Human in the Loop</a>
+<a href="../day5/0023-state-persistence.html">Day 5: State Persistence &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

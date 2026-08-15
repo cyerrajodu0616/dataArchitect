@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0021 — Human in the Loop: Where the Approval Gate Goes, and Why</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; } .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail { border-top:3px solid #1967d2; } .domains .ins { border-top:3px solid #6b3fa0; } .domains .fin { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; } .domains .ins .dhead { color:#6b3fa0; } .domains .fin .dhead { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Human in the Loop — Where the Gate Goes, and Why</h1>
+<p class="subtitle">Week 4, Day 3 — the approval threshold is arithmetic, and "review everything" is the trap</p>
+
+<div class="plain">
+<div class="label">The question, in plain words</div>
+<p>Your agent can now do things — issue a refund, approve a policy, resolve a dispute. Some of those it will get wrong.</p>
+<p>So: <strong>when should it stop and ask a person first?</strong></p>
+<p style="margin-bottom:0;">Almost every team answers this by picking a round number in a meeting. Usually $500. It's rarely revisited, and it's almost never right — because it's an arithmetic problem, and the arithmetic has a surprise in it.</p>
+</div>
+
+<h2>1. The Obvious Half</h2>
+
+<p>Two costs, pulling opposite ways:</p>
+
+<table class="matrix-table">
+  <tr><th></th><th>What it costs</th></tr>
+  <tr><td><strong>Reviewing an action</strong></td><td>A person's minutes. At $45/hour loaded, a 3-minute review is $2.25.</td></tr>
+  <tr><td><strong>Not reviewing it</strong></td><td>P(the agent is wrong) × what wrong costs. At a 4% error rate on a $42 refund, that's $1.68.</td></tr>
+</table>
+
+<div class="math-box">review it when &nbsp; P(wrong) &#215; cost_if_wrong &nbsp; &gt; &nbsp; cost_to_review</div>
+
+<p>Rearrange and you get a dollar threshold directly: <code>threshold = review_cost / error_rate</code>. For retail that's <strong>$2.25 / 0.04 = $56</strong>. Review anything above $56, let the rest through.</p>
+
+<p>That's the textbook answer. It's also wrong, and the reason is interesting.</p>
+
+<h2>2. The Half That Changes the Answer</h2>
+
+<div class="plain">
+<div class="label">In plain words</div>
+<p>If you give a person <strong>five</strong> things to check in an hour, they read them properly.</p>
+<p>If you give the same person <strong>forty</strong> things to check in an hour, they click approve without reading.</p>
+<p style="margin-bottom:0;">Reviewer attention is finite. So the catch rate isn't a fixed number — it <em>falls as the queue grows</em>. And that single fact turns the whole problem upside down.</p>
+</div>
+
+<div class="anchor">
+<div class="label">You've seen this exact failure before</div>
+It's alert fatigue. Every team that has ever built a monitoring system has learned that a channel with 400 alerts a day is functionally the same as a channel with none — <strong>except that it costs money and creates the belief that someone is watching.</strong>
+<p style="margin-top:0.7rem;margin-bottom:0;">An approval queue is an alert channel where each alert has a button on it. The failure mode is identical, and so is the fix: send fewer, higher-signal items.</p>
+</div>
+
+<div class="verdict">
+<div class="label">The consequence</div>
+Total cost is <strong>U-shaped</strong> in the threshold:
+<p style="margin-top:0.7rem;margin-bottom:0;">Threshold too <strong>high</strong> → bad actions go through unreviewed.<br>
+Threshold too <strong>low</strong> → the queue floods, reviewers rubber-stamp, and you pay full price for a review that caught nothing.</p>
+</div>
+
+<h2>3. What the Numbers Say</h2>
+
+<div class="code-inline">python approval_economics.py --domain retail
+
+     threshold    routed  reviewed   /hour  catch   review $    missed $     TOTAL $   queue
+  ----------------------------------------------------------------------------------------
+    review ALL   120,000    6,400!    40.0    25%     14,400     198,859     213,259  562.5d
+           $25    73,044    6,400!    40.0    25%     14,400     197,743     212,143  342.4d
+           $89    10,579    6,400!    40.0    25%     14,400     192,693     207,093   49.6d
+          $170     1,818    1,818     11.4    92%      4,089     185,995     190,085    8.5d  &lt;-- best
+          $323       173      173      1.1    92%        389     198,967     199,356    0.8d
+        $1,165         0        0      0.0    92%          1     201,588     201,588    0.0d
+
+  ! = routed more than the team can physically read; the excess is
+      auto-approved on a timeout with no scrutiny at all</div>
+
+<svg viewBox="0 0 760 290" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE U-SHAPE &#8212; RETAIL REFUND APPROVALS</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Review cost falls as the threshold rises. Missed-error cost rises. The total has a minimum.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="76" font-weight="700" fill="#a8451f">review ALL</text>
+    <rect x="130" y="65" height="15" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="33" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <rect x="163" y="65" height="15" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="455" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <text x="628" y="77" fill="#a8451f" font-weight="700" opacity="0">$213k
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.1s"/></text>
+    <text x="130" y="94" fill="#a8451f" font-size="9.5" opacity="0">catch 25% &#8212; and only 6,400 of the 120,000 even get looked at.
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.3s"/></text>
+
+    <text x="24" y="124" font-weight="700" fill="#333">$89</text>
+    <rect x="130" y="113" height="15" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="54" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <rect x="184" y="113" height="15" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="451" dur="0.9s" fill="freeze" begin="0.45s"/></rect>
+    <text x="645" y="125" fill="#555" opacity="0">$221k
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.35s"/></text>
+
+    <text x="24" y="154" font-weight="700" fill="#2e6b3e">$170</text>
+    <rect x="130" y="143" height="15" rx="2" fill="#1f5f8b" width="0">
+      <animate attributeName="width" from="0" to="9" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <rect x="139" y="143" height="15" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="426" dur="0.9s" fill="freeze" begin="0.7s"/></rect>
+    <text x="575" y="155" fill="#2e6b3e" font-weight="700" opacity="0">$190k &#8592; MINIMUM
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+    <text x="130" y="172" fill="#2e6b3e" font-size="9.5" opacity="0">catch rate 92% &#8212; 11 items/hour. Reviewers actually read these.
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.8s"/></text>
+
+    <text x="24" y="202" font-weight="700" fill="#333">$1,165 (&#8776; review nothing)</text>
+    <rect x="130" y="191" height="15" rx="2" fill="#c8602a" width="0">
+      <animate attributeName="width" from="0" to="462" dur="0.9s" fill="freeze" begin="0.95s"/></rect>
+    <text x="602" y="203" fill="#555" opacity="0">$202k
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.85s"/></text>
+  </g>
+
+  <rect x="130" y="224" width="13" height="11" fill="#1f5f8b"/>
+  <text x="149" y="234" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">cost of reviewing</text>
+  <rect x="280" y="224" width="13" height="11" fill="#c8602a"/>
+  <text x="299" y="234" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">cost of errors that got through</text>
+
+  <text x="24" y="262" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333"><tspan font-weight="700">Reviewing everything costs $213k and reaches 5% of the queue.</tspan> Reviewing 1.5% of actions costs $190k and catches 92% of what it sees.</text>
+  <text x="24" y="280" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">The textbook threshold was $56. The real optimum is $170 &#8212; three times higher, entirely because of reviewer capacity.</text>
+</svg>
+
+<div class="caution">
+<div class="label">The finding to carry into an interview</div>
+<strong>"Review everything" is not the safe default.</strong> Two reviewers can physically process 6,400 items a month. Route them 120,000 and <strong>113,600 are auto-approved on a timeout</strong> — and the 6,400 that <em>are</em> seen arrive at 40/hour, where the catch rate has already fallen to 25%.
+<p style="margin-top:0.7rem;margin-bottom:0;">And the failure is <em>invisible</em>: the approvals all come back signed. Every dashboard shows 100% of high-value actions reviewed. It looks like the strongest possible control right up until someone audits what the reviewers actually caught. This is an expensive way to convert a real control into a theatrical one.</p>
+</div>
+
+<h2>4. Sometimes Staffing <em>Is</em> the Threshold</h2>
+
+<p>Run the insurance case and something different happens:</p>
+
+<div class="code-inline">python approval_economics.py --domain insurance
+
+  Cheapest gate    : $16,937
+  Reviewed         : 1,099/month  (45.8% of actions)
+  Catch rate there : 92%   (6.9 items/hour across 3 reviewers)
+
+  THE OPTIMUM IS SET BY STAFFING, NOT BY VALUE. At $16,937 the queue is
+  1,099/month against a capacity of 1,152. Lower the threshold by one step
+  and the queue overflows — the excess gets approved on a timeout with no
+  scrutiny at all.</div>
+
+<div class="verdict">
+<div class="label">The threshold isn't really the decision</div>
+The optimum sits <em>exactly</em> at the capacity line: 1,099 routed against 1,152 reviewable. One step lower and the queue overflows.
+<p style="margin-top:0.7rem;margin-bottom:0;">So the real question is not <em>"what's the right threshold?"</em> — it's <strong>"how many reviewers do we have?"</strong>, and the threshold is whatever keeps the queue inside that. <strong>Staffing is the control.</strong> The threshold is just how you express it.</p>
+<p style="margin-top:0.7rem;margin-bottom:0;">That reframing is worth having ready. "We'd set it at $500" is a guess. "We have three underwriters, that's 1,150 reviews a month, so the threshold is whatever routes 1,150 cases — and today that's about $17k" is a capacity plan.</p>
+</div>
+
+<h2>5. The Four Shapes of Human Involvement</h2>
+
+<p>"Human in the loop" is four different things, and they have very different costs:</p>
+
+<table class="matrix-table">
+  <tr><th>Pattern</th><th>What happens</th><th>Cost</th><th>Use when</th></tr>
+  <tr>
+    <td><strong>Approve / reject</strong></td>
+    <td>Agent pauses before acting. Human says yes or no.</td>
+    <td class="no">Highest — blocks the action, adds full queue latency.</td>
+    <td>Irreversible and expensive. Money leaving, a policy bound.</td>
+  </tr>
+  <tr>
+    <td><strong>Edit then approve</strong></td>
+    <td>Human can change the agent's draft before it goes.</td>
+    <td class="no">Highest, plus more time per item.</td>
+    <td>The agent is usually right about <em>what</em> and often wrong about <em>details</em> — a letter, a coverage recommendation.</td>
+  </tr>
+  <tr>
+    <td><strong>Escalate only</strong></td>
+    <td>Agent acts alone; hands over only when it's unsure.</td>
+    <td class="yes">Low — only the hard cases queue.</td>
+    <td class="yes"><strong>The default.</strong> Needs a calibrated confidence signal, which is the hard part.</td>
+  </tr>
+  <tr>
+    <td><strong>Review after the fact</strong></td>
+    <td>Agent acts. A sample is audited later.</td>
+    <td class="yes">Lowest — zero latency, no blocking.</td>
+    <td class="yes">Reversible actions. Catches <em>systematic</em> drift, which per-item review is bad at.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">The one people skip — and it catches what the others can't</div>
+<strong>Review-after-the-fact is not a weaker version of approval.</strong> It answers a different question. Per-item approval asks <em>"is this one right?"</em> Sampled audit asks <em>"has the agent started being wrong in a new way?"</em>
+<p style="margin-top:0.7rem;margin-bottom:0;">A reviewer approving items one at a time will not notice that the error rate moved from 4% to 11% last Tuesday. A weekly audit of 50 sampled actions will. <strong>Most systems need both</strong>, and the audit is far cheaper — it's the same golden-set discipline as Week 3 Day 4, applied to actions instead of retrieval.</p>
+</div>
+
+<h2>6. How a Pause Actually Works</h2>
+
+<div class="plain">
+<div class="label">Why pausing is technically hard</div>
+<p>"Wait for a human" sounds easy. It isn't, because the wait may be <strong>three days</strong>, and no process stays alive for three days.</p>
+<p style="margin-bottom:0;">So the agent has to: save everything it knows, exit completely, and later — in a <em>different process, on a different machine, possibly after a deploy</em> — pick up at exactly the node it stopped at, with the same state.</p>
+</div>
+
+<div class="code-inline"># LangGraph: stop before a node, resume later by thread id
+app = graph.compile(
+    checkpointer=PostgresSaver(conn),      # state saved after every node
+    interrupt_before=["execute_refund"],   # stop here, always
+)
+
+# turn 1 — runs until it hits the gate, then returns
+app.invoke({"request": msg}, config={"configurable": {"thread_id": case_id}})
+
+# ... three days pass. The pod restarts twice. There is a deploy.
+
+# turn 2 — resumes at execute_refund with the state it had
+app.invoke(None, config={"configurable": {"thread_id": case_id}})</div>
+
+<div class="anchor">
+<div class="label">The thing to notice</div>
+<code>thread_id</code> is doing all the work — it's the primary key of a durable row holding the whole state. Resuming is a <code>SELECT</code>, not magic.
+<p style="margin-top:0.7rem;margin-bottom:0;">Which is exactly why Day 2's damage table scored "pause for a human" and "survive a crash" identically: <strong>they're the same requirement.</strong> Both need durable state resumable at an exact node. Day 5 sizes what that costs in Postgres.</p>
+</div>
+
+<h2>7. Three Domains, Three Different Gates</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — refunds</div>
+    <p><span class="kv">120k actions/mo &#183; $42 mean<br>optimum: $170 &#183; 1.5% reviewed</span></p>
+    <p><strong>Escalate-only + sampled audit.</strong> The arithmetic says review almost nothing, and that unintuitive answer is correct — a $42 refund isn't worth three minutes at a 4% error rate.</p>
+    <p>Note the gate barely pays for itself: $190k vs $202k reviewing nothing. <strong>The bigger lever here is the error rate, not the gate.</strong></p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance — underwriting</div>
+    <p><span class="kv">2,400 actions/mo &#183; $18k mean<br>optimum: $17k &#183; capacity-bound</span></p>
+    <p><strong>Approve/reject, and a regulatory floor underneath.</strong> Some decisions must be reviewed whether or not the maths agrees.</p>
+    <p><strong>The threshold is the lower of the economic answer and the compliance answer</strong> — and here compliance binds first. The economics then tell you what that requirement <em>costs</em>, which is still worth knowing.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech — disputes</div>
+    <p><span class="kv">45k actions/mo &#183; $260 mean<br>optimum: $465 &#183; 39-day queue</span></p>
+    <p><strong>Escalate-only, and the queue length is the binding problem.</strong> 39 days to clear against a network deadline measured in days.</p>
+    <p>Here a slow queue isn't a cost — it's <strong>an automatic loss</strong>. The deadline passes and the dispute resolves against you. Latency is the constraint, not money.</p>
+  </div>
+</div>
+
+<h2>8. What This Model Does Not Price</h2>
+
+<p>Be straight about the limits — an interviewer will probe them, and having the list ready is worth more than the model.</p>
+
+<table class="matrix-table">
+  <tr><th>Not priced</th><th>Why it matters</th></tr>
+  <tr>
+    <td><strong>Regulatory floors</strong></td>
+    <td>Some decisions must be reviewed regardless of expected value. The real threshold is the <em>lower</em> of the economic and compliance answers. The model's job then shifts: it tells you what the requirement costs, not whether to have it.</td>
+  </tr>
+  <tr>
+    <td><strong>Correlated failure</strong></td>
+    <td>This prices one error at a time. A bug that makes the agent wrong the same way 4,000 times isn't 4,000 small losses — it's one incident. That needs a circuit breaker, which is Day 4, not a threshold.</td>
+  </tr>
+  <tr>
+    <td><strong>Accountability</strong></td>
+    <td>Some gates exist to create an accountable human, not to catch errors. That's legitimate and the model can't see it. Say so rather than pretending the arithmetic settles it.</td>
+  </tr>
+  <tr>
+    <td><strong>Reviewer learning</strong></td>
+    <td>Reviewers who see only hard cases get better at them; reviewers who see everything get worse at all of them. The fatigue curve here is static, and the real one probably steepens over months.</td>
+  </tr>
+</table>
+
+<h2>9. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it does</th></tr>
+  <tr>
+    <td><code>week4/day3/approval_economics.py</code></td>
+    <td>Sweeps the approval threshold and prices each one — review cost, expected loss from missed errors, total — with a <strong>reviewer-fatigue model</strong> so catch rate falls as the queue grows, and a <strong>hard capacity constraint</strong> so you can't buy review you haven't staffed. Reports the naive textbook threshold beside the real optimum. <code>--domain</code>, <code>--error-rate</code>, <code>--review-minutes</code>, <code>--reviewers</code>, <code>--no-fatigue</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day3
+python approval_economics.py --domain retail       # U-shape; review 1.5%
+python approval_economics.py --domain insurance    # optimum set by staffing
+python approval_economics.py --domain fintech      # queue latency is the constraint
+python approval_economics.py --no-fatigue          # the naive model, for contrast
+python approval_economics.py --domain insurance --reviewers 6   # staff up, then re-solve</div>
+
+<div class="trythis">
+<div class="label">Try this</div>
+Run insurance with <code>--reviewers 6</code> and watch the optimal threshold move. That's the point of the whole lesson in one command: <strong>the threshold is an output of your staffing, not an independent decision.</strong>
+</div>
+
+<h2>10. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>Human-in-the-Loop Check</h3>
+
+<div class="quiz">
+<div class="q">1. What's the textbook formula for the approval threshold, and why is it wrong?</div>
+<button data-correct="false"><code>threshold = mean_action_value × 2</code>; it's wrong because value distributions are skewed.</button>
+<button data-correct="true"><code>threshold = review_cost / error_rate</code>. It's wrong because it assumes catch rate is constant. Reviewer attention is finite, so catch rate falls as the queue grows — which makes total cost U-shaped and pushes the real optimum well above the formula's answer ($170 vs $56 for retail).</button>
+<button data-correct="false"><code>threshold = review_cost × error_rate</code>; the multiplication should be a division.</button>
+<button data-correct="false">There isn't one — it's a business judgement, not a calculation.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. "We review 100% of high-value actions." Why might that be worse than reviewing 1.5%?</div>
+<button data-correct="false">It isn't — more review is always at least as safe, just more expensive.</button>
+<button data-correct="true">Because at 120 items per hour per reviewer the catch rate collapses to ~0%. You pay $14,400/month for a control that stops nothing, and the failure is invisible because the approvals all come back signed. Reviewing 1.5% costs less <em>and</em> catches 92% of what it sees.</button>
+<button data-correct="false">Because reviewing everything makes the agent's own error rate worse over time.</button>
+<button data-correct="false">Because regulators penalise excessive manual intervention.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. For insurance, the optimum threshold sits exactly at 1,099 routed against a capacity of 1,152. What does that tell you?</div>
+<button data-correct="false">That the model has converged and the threshold is well-calibrated.</button>
+<button data-correct="true">That the threshold isn't really the decision — staffing is. The optimum is pinned to the capacity line, so the honest framing is "we have three underwriters, that's 1,150 reviews a month, so the threshold is whatever routes 1,150 cases." Change the headcount and the threshold moves.</button>
+<button data-correct="false">That you should lower the threshold to use the remaining 53 slots of capacity.</button>
+<button data-correct="false">That the error rate estimate is too high for this volume.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Why does a system usually need sampled after-the-fact audit <em>as well as</em> per-item approval?</div>
+<button data-correct="false">Because regulators require two independent controls.</button>
+<button data-correct="true">Because they answer different questions. Per-item approval asks "is this one right?"; a sampled audit asks "has the agent started being wrong in a new way?" A reviewer approving items one at a time won't notice the error rate moved from 4% to 11% last Tuesday. The audit is also far cheaper — zero latency, no blocking.</button>
+<button data-correct="false">Because approval queues can be bypassed under load, so the audit is a backstop.</button>
+<button data-correct="false">Because auditing lets you reduce the number of reviewers needed.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Why is "pause for a human approval" technically the same problem as "survive a crash"?</div>
+<button data-correct="false">They aren't — one is a product requirement, the other is infrastructure.</button>
+<button data-correct="true">Both need durable state that resumes at an exact node. A three-day wait means no process stays alive, so the agent must save everything, exit, and later resume in a different process — possibly after a deploy. That's the same machinery a crash-resume needs, which is why Day 2 scored both as "rewrite" for the frameworks that lack it.</button>
+<button data-correct="false">Both are solved by making every node idempotent.</button>
+<button data-correct="false">Both require the state to be small enough to fit in a message queue.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Fintech's optimum threshold produces a 39-day review queue. Why is that different from a cost problem?</div>
+<button data-correct="false">It isn't — a long queue just means the review cost is spread over more time.</button>
+<button data-correct="true">Because there's a network deadline measured in days. A queue that clears in 39 days means the deadline passes and the dispute resolves against you automatically — the loss isn't the review cost, it's the whole disputed amount. Latency is the binding constraint, so the fix is staffing or an async pattern, not a better threshold.</button>
+<button data-correct="false">Because customer satisfaction scores fall with wait time.</button>
+<button data-correct="false">Because the state checkpoint expires before the review completes.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want to run the model on your own volumes, work out the compliance floor separately from the economic answer, or design the sampled-audit job? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day2/0020-framework-comparison.html">&larr; Day 2: Which Framework</a>
+<a href="../day4/0022-error-handling-retries.html">Day 4: Error Handling &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

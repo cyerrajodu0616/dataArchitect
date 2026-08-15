@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0023 — State Persistence: Checkpoints, the Quadratic, and Why Postgres</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; } .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail { border-top:3px solid #1967d2; } .domains .ins { border-top:3px solid #6b3fa0; } .domains .fin { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; } .domains .ins .dhead { color:#6b3fa0; } .domains .fin .dhead { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>State Persistence — Checkpoints, the Quadratic, and Why Postgres</h1>
+<p class="subtitle">Week 4, Day 5 — what "save the agent's progress" actually costs</p>
+
+<div class="plain">
+<div class="label">What a checkpoint is</div>
+<p>After every step, the agent writes down everything it knows so far. That saved copy is a <strong>checkpoint</strong>.</p>
+<p>It's what makes two things possible, and Day 2 showed they're the same requirement: <strong>surviving a crash</strong>, and <strong>pausing for a human</strong> and coming back three days later.</p>
+<p style="margin-bottom:0;">Think of it as a save file in a game. Except it's saved on every single move, and there might be a million games running.</p>
+</div>
+
+<h2>1. Resuming Is a SELECT</h2>
+
+<p>Before any sizing, it's worth seeing that there's no magic here:</p>
+
+<div class="code-inline">CREATE TABLE agent_checkpoint (
+  thread_id   uuid    NOT NULL,        -- the run. Day 3's resume key.
+  step        int     NOT NULL,
+  node        text    NOT NULL,        -- where to resume
+  state       jsonb   NOT NULL,        -- full, or a delta
+  is_full     boolean NOT NULL,        -- delta chains need an anchor
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (thread_id, step)
+);
+
+-- "resume the run" is this, and only this:
+SELECT node, state FROM agent_checkpoint
+ WHERE thread_id = :id ORDER BY step DESC LIMIT 1;</div>
+
+<div class="anchor">
+<div class="label">That's the whole checkpointer</div>
+A write after each node, and a <code>SELECT ... ORDER BY step DESC LIMIT 1</code> to resume. Day 3's <code>thread_id</code> is just the primary key. Once you've seen this, "the framework handles durable resumption for you" stops sounding like magic and starts sounding like <em>a table you didn't have to write</em> — which is the correct amount of credit to give it.
+</div>
+
+<h2>2. The Estimate Everyone Makes, and Why It's Wrong</h2>
+
+<p>The natural sizing is <code>runs × steps × state_size</code>. It's wrong, and the reason is worth internalising because it changes the answer by 4–8×.</p>
+
+<div class="plain">
+<div class="label">In plain words</div>
+<p><strong>The state grows as the run goes on.</strong> Step 1's state is a question. Step 12's state is a question plus eleven tool results plus the whole message history.</p>
+<p style="margin-bottom:0;">So if you save the <em>entire</em> state at every step, you're not writing the same size N times. You're writing 1, then 2, then 3… and the total is <code>1+2+3+…+N</code>.</p>
+</div>
+
+<div class="math-box">total bytes per run = N(N+1)/2 &#215; growth &nbsp;&#8594;&nbsp; <strong>quadratic in step count</strong></div>
+
+<div class="code-inline">python checkpoint_sizing.py --domain retail
+
+  model                                             GB/month      vs naive
+  ------------------------------------------------------------------------
+  naive: runs x steps x initial state                   31.2          1.0x
+  real: full checkpoints, state grows                  113.1          3.6x
+  with delta checkpoints                                28.6          0.9x
+
+     steps    GB/mo (full)   GB/mo (delta)     ratio
+  ------------------------------------------------------
+         4            59.8            20.8      2.9x
+         6           113.1            28.6      4.0x   &lt;-- yours
+        10           266.5            44.2      6.0x
+        20           923.0            83.2     11.1x
+        30         1,969.5           122.2     16.1x</div>
+
+<svg viewBox="0 0 760 250" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">STORAGE vs STEP COUNT &#8212; FULL CHECKPOINTS ARE QUADRATIC</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Retail: 1.3M runs/month. Doubling the steps roughly quadruples the storage.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <text x="24" y="72" font-weight="700" fill="#333">4 steps</text>
+    <rect x="106" y="61" height="15" rx="2" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="18" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <rect x="106" y="61" height="15" rx="2" fill="#2e6b3e" width="0" opacity="0.9">
+      <animate attributeName="width" from="0" to="6" dur="0.9s" fill="freeze" begin="0.2s"/></rect>
+    <text x="134" y="73" fill="#555" opacity="0">60 GB full &#183; 21 GB delta
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.0s"/></text>
+
+    <text x="24" y="100" font-weight="700" fill="#333">6 steps</text>
+    <rect x="106" y="89" height="15" rx="2" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="35" dur="0.9s" fill="freeze" begin="0.4s"/></rect>
+    <rect x="106" y="89" height="15" rx="2" fill="#2e6b3e" width="0" opacity="0.9">
+      <animate attributeName="width" from="0" to="9" dur="0.9s" fill="freeze" begin="0.4s"/></rect>
+    <text x="151" y="101" fill="#555" opacity="0">113 GB full &#183; 29 GB delta
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.2s"/></text>
+
+    <text x="24" y="128" font-weight="700" fill="#333">10 steps</text>
+    <rect x="106" y="117" height="15" rx="2" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="82" dur="0.9s" fill="freeze" begin="0.6s"/></rect>
+    <rect x="106" y="117" height="15" rx="2" fill="#2e6b3e" width="0" opacity="0.9">
+      <animate attributeName="width" from="0" to="14" dur="0.9s" fill="freeze" begin="0.6s"/></rect>
+    <text x="198" y="129" fill="#555" opacity="0">267 GB full &#183; 44 GB delta
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.4s"/></text>
+
+    <text x="24" y="156" font-weight="700" fill="#a8451f">20 steps</text>
+    <rect x="106" y="145" height="15" rx="2" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="284" dur="0.9s" fill="freeze" begin="0.8s"/></rect>
+    <rect x="106" y="145" height="15" rx="2" fill="#2e6b3e" width="0" opacity="0.9">
+      <animate attributeName="width" from="0" to="26" dur="0.9s" fill="freeze" begin="0.8s"/></rect>
+    <text x="400" y="157" fill="#a8451f" font-weight="700" opacity="0">923 GB full &#183; 83 GB delta &#8212; 11&#215;
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" begin="1.6s"/></text>
+
+    <text x="24" y="184" font-weight="700" fill="#a8451f">30 steps</text>
+    <rect x="106" y="173" height="15" rx="2" fill="#a8451f" width="0">
+      <animate attributeName="width" from="0" to="606" dur="0.9s" fill="freeze" begin="1.0s"/></rect>
+    <rect x="106" y="173" height="15" rx="2" fill="#2e6b3e" width="0" opacity="0.9">
+      <animate attributeName="width" from="0" to="38" dur="0.9s" fill="freeze" begin="1.0s"/></rect>
+  </g>
+
+  <rect x="106" y="200" width="13" height="11" fill="#a8451f"/>
+  <text x="125" y="210" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">full checkpoints (quadratic)</text>
+  <rect x="290" y="200" width="13" height="11" fill="#2e6b3e"/>
+  <text x="309" y="210" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">delta checkpoints (linear)</text>
+
+  <text x="24" y="238" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">This is also a second, independent argument for <tspan font-weight="700">fewer nodes</tspan> &#8212; Day 4 wanted that for reliability, and storage wants it too.</text>
+</svg>
+
+<div class="verdict">
+<div class="label">Two lessons pointing the same way</div>
+Day 4 said fewer nodes because <strong>reliability multiplies</strong>. Today says fewer nodes because <strong>storage is quadratic</strong>. Those are independent arguments arriving at the same design guidance, which is unusual and worth leaning on: <em>when someone proposes splitting a node, it costs you twice.</em>
+</div>
+
+<h2>3. The Three Levers, In Order</h2>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Lever</th><th>Retail effect</th><th>What it costs you</th></tr>
+  <tr>
+    <td>1</td>
+    <td class="yes"><strong>Trim the state</strong> — stop storing raw tool output nobody re-reads</td>
+    <td>~65% reduction</td>
+    <td class="yes"><strong>Nothing.</strong> And it shrinks everything downstream: write rate, WAL, replication, backup, and the prompt if that state is being passed to the model.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Delta checkpoints</strong> — write only what changed</td>
+    <td>113 GB → 29 GB</td>
+    <td>You can't read one checkpoint standalone any more; you replay from the last full anchor. Slightly slower resume, more code.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Shorter retention</strong></td>
+    <td>Linear in days</td>
+    <td class="no">Usually not an engineering decision at all. See insurance below.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">Why trimming comes first, and why it's usually skipped</div>
+Most agent state is <strong>raw tool responses</strong> — the full JSON from an order lookup when the agent needed three fields. Storing the whole payload is the default because it's easier, and it's the single biggest contributor to both the base size and the growth rate.
+<p style="margin-top:0.7rem;margin-bottom:0;">It's free to fix and it compounds: the same trim reduces storage, write volume, WAL, replication lag, restore time, <em>and</em> — if that state is being serialised into prompts — token cost. It's the only lever on this page with no downside, which is exactly why it's worth doing before the clever one.</p>
+</div>
+
+<h2>4. Does It Belong in Postgres?</h2>
+
+<p>ADR-002 put vectors in Postgres. The same argument applies here and is <em>stronger</em>, for a reason that usually gets left out of the Redis-vs-Postgres discussion:</p>
+
+<div class="verdict">
+<div class="label">The transactional argument</div>
+The checkpoint and the business record it refers to live in the same database, so <strong>"refund issued" and "agent state says refund issued" can be written in one transaction.</strong>
+<p style="margin-top:0.7rem;margin-bottom:0;">Split them across two systems and you've re-created the <strong>dual-write problem</strong> from Week 2 Day 2 — same drift, except now the drift is between <em>an action and the record of it</em>. That's a much worse thing to be inconsistent about than a stale search index.</p>
+</div>
+
+<table class="matrix-table">
+  <tr><th>Concern</th><th>Postgres</th><th>Redis (or a dedicated store)</th></tr>
+  <tr><td><strong>Write rate</strong></td><td>Retail checkpoints are <strong>12/sec peak against 2,400/sec</strong> of existing OLTP — 0.5%. Noise.</td><td>Solves a problem you don't have at this rate.</td></tr>
+  <tr><td><strong>Transactionality</strong></td><td class="yes">Action and checkpoint commit together.</td><td class="no">Two systems, two writes, drift.</td></tr>
+  <tr><td><strong>Backup / restore</strong></td><td class="yes">One restore. Business data and agent state come back consistent.</td><td class="no">A restore that recovers business data but not agent state leaves in-flight runs pointing at rows that moved.</td></tr>
+  <tr><td><strong>Audit</strong></td><td class="yes">For insurance the checkpoint history <em>is</em> the audit trail — same artifact, same lifecycle.</td><td>Separate retention, separate compliance story.</td></tr>
+  <tr><td><strong>Latency</strong></td><td>A few ms per write.</td><td class="partial">Faster — matters only if state is large, hot, and read every step.</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">When it stops being Postgres — say this before being asked</div>
+<strong>1.</strong> Checkpoint writes become a large share of a shared OLTP instance's write load. Measure it; retail's 0.5% is nothing, but a 30-step agent at the same volume is a different conversation.<br>
+<strong>2.</strong> State is large <em>and</em> hot <em>and</em> read every step — then Redis for hot, Postgres as the durable tier, and treat Redis as a cache you're allowed to lose.<br>
+<strong>3.</strong> Runs are so short nothing needs to survive. <strong>Then don't checkpoint at all</strong> — an in-memory saver is a legitimate choice and almost nobody suggests it.
+</div>
+
+<div class="anchor">
+<div class="label">One operational detail worth knowing</div>
+If retention is short, <strong>partition by <code>created_at</code></strong> and drop partitions. A <code>DELETE</code> at 7.8M rows/month generates WAL, bloats the table, and hands autovacuum work nobody budgeted for. Dropping a partition is instant and generates almost nothing. You've made this call before on event tables — it's the same call.
+</div>
+
+<h2>5. Three Domains, Three Different Problems</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">6 steps &#183; 1.3M runs/mo<br>3-day retention</span></p>
+    <p><strong>A write-rate question, not a storage one.</strong> 7.8M writes/month = 12/sec peak, which is 0.5% of existing OLTP load. Free.</p>
+    <p>Retention can be brutal — a finished conversation is worth nothing once the customer leaves. Partition and drop daily.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">14 steps &#183; 2,400 runs/mo<br><strong>2,555-day retention</strong></span></p>
+    <p><strong>The opposite shape.</strong> Tiny volume, long runs, big state — and seven years of retention because <em>the checkpoint history is the audit trail</em> of how the decision was reached.</p>
+    <p><strong>You cannot delete your way out</strong>, so the quadratic matters most here: <strong>458 GB full vs 57 GB delta</strong>. Delta checkpointing isn't an optimisation, it's the design.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><span class="kv">9 steps &#183; 45k runs/mo<br>180-day retention</span></p>
+    <p>Middle everything, but note the OLTP baseline: <strong>4,000 writes/sec</strong> of transaction traffic on the same instance.</p>
+    <p>Retention is set by dispute-window rules, not by engineering. Measure the checkpoint share before assuming it's free.</p>
+  </div>
+</div>
+
+<h2>6. Companion Script</h2>
+
+<table class="matrix-table">
+  <tr><th>Script</th><th>What it does</th></tr>
+  <tr>
+    <td><code>week4/day5/checkpoint_sizing.py</code></td>
+    <td>Computes checkpoint write rate <em>as a share of existing OLTP load</em>, storage under the naive linear model against the real quadratic one, what each of the three levers is worth in GB and dollars, and whether Postgres is the right home using the ADR-002 reasoning. <code>--domain</code>, <code>--steps</code>, <code>--growth-kb</code>, <code>--retain-days</code>.</td>
+  </tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day5
+python checkpoint_sizing.py --domain retail      # write rate is 0.5% of OLTP
+python checkpoint_sizing.py --domain insurance   # 7-year retention, 458 GB vs 57 GB
+python checkpoint_sizing.py --steps 20           # watch the quadratic bite
+python checkpoint_sizing.py --retain-days 7      # what retention alone buys</div>
+
+<h2>7. Interactive Assessment Quiz</h2>
+
+<div class="quiz-container">
+<h3>State Persistence Check</h3>
+
+<div class="quiz">
+<div class="q">1. You size checkpoints as <code>runs × steps × state_size</code>. What's wrong with that?</div>
+<button data-correct="false">Nothing — it's the standard formula.</button>
+<button data-correct="true">It assumes state size is constant, but state grows as the run proceeds — message history and tool results accumulate. Writing the full state each step gives 1+2+3+…+N = N(N+1)/2 bytes per run, so storage is <em>quadratic</em> in step count. The naive figure is off by 3.6× at 6 steps and 11× at 20.</button>
+<button data-correct="false">It ignores compression, which typically reduces JSONB by 60%.</button>
+<button data-correct="false">It double-counts, because LangGraph only checkpoints at conditional edges.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Which lever should you pull first, and why?</div>
+<button data-correct="false">Shorter retention — it's a single config change with immediate effect.</button>
+<button data-correct="true">Trim the state. Most agent state is raw tool responses nobody re-reads, it's free to fix, and it shrinks everything downstream at once — storage, write rate, WAL, replication, restore time, and prompt tokens if the state is serialised into prompts. It's the only lever with no downside.</button>
+<button data-correct="false">Delta checkpoints — the biggest single reduction, 113 GB to 29 GB.</button>
+<button data-correct="false">Move to Redis, which removes the storage cost from Postgres entirely.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. What's the strongest argument for keeping checkpoints in Postgres rather than Redis?</div>
+<button data-correct="false">Postgres storage is cheaper per GB than in-memory storage.</button>
+<button data-correct="true">Transactionality. The checkpoint and the business record it refers to are in the same database, so "refund issued" and "agent state says refund issued" commit together. Split them and you've re-created the Week 2 dual-write problem — with drift now between an action and the record of it.</button>
+<button data-correct="false">Redis can't store JSON documents of the size agent state requires.</button>
+<button data-correct="false">Postgres offers better write throughput for append-only workloads.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Insurance retains checkpoints for 2,555 days. Why does the quadratic matter more there than anywhere else?</div>
+<button data-correct="false">Because insurance runs have more steps than the other domains.</button>
+<button data-correct="true">Because you can't delete your way out. Retention is a compliance requirement — the checkpoint history <em>is</em> the audit trail of how the decision was reached — so the third lever is unavailable. That makes delta checkpointing the difference between 458 GB and 57 GB you must keep for seven years, which is a design decision rather than an optimisation.</button>
+<button data-correct="false">Because insurance state is JSONB, which doesn't compress well.</button>
+<button data-correct="false">Because the write rate is high enough to saturate the instance.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Day 4 argued for fewer nodes because reliability multiplies. What does today add?</div>
+<button data-correct="false">Nothing new — it's the same argument restated.</button>
+<button data-correct="true">An independent second reason: full-checkpoint storage is quadratic in step count, so doubling the nodes roughly quadruples storage. Two unrelated arguments landing on the same guidance is worth leaning on — splitting a node costs you twice.</button>
+<button data-correct="false">That fewer nodes reduce prompt token cost, which dominates both.</button>
+<button data-correct="false">That fewer nodes make the graph easier to audit.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Retention is 3 days and you're writing 7.8M checkpoints a month. How should old rows be removed?</div>
+<button data-correct="false">A nightly <code>DELETE ... WHERE created_at &lt; now() - interval '3 days'</code>.</button>
+<button data-correct="true">Partition by <code>created_at</code> and drop partitions. A DELETE at this row count generates WAL, bloats the table, and creates autovacuum work nobody budgeted for; dropping a partition is instant and generates almost nothing. It's the same call you'd make on any high-volume event table.</button>
+<button data-correct="false">A TTL index, which expires rows automatically.</button>
+<button data-correct="false">Move rows to cold storage first, then delete in batches.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Want help designing the delta-checkpoint format, working out what's safe to trim from state, or sizing this against your own OLTP write load? Ask in your chat session.</p>
+
+<div class="nav">
+<a href="../day4/0022-error-handling-retries.html">&larr; Day 4: Error Handling</a>
+<a href="../day6-7/0024-checkpoint-agent-state-graph.html">Day 6-7: Checkpoint &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>
