@@ -41,12 +41,55 @@
   .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
   .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
   @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:44px; }
 </style>
 </head>
 <body>
 
 <h1>Checkpoint — Retrieval Pipeline Redesign, With Eval Built In</h1>
 <p class="subtitle">Week 3, Days 6–7 — ADR-003, and every decision traced to the number that justifies it</p>
+
+<div class="plain">
+<div class="label">New to this? Read Day 0 first</div>
+<p>This lesson assumes the vocabulary from <a href="../day0/0013a-rag-from-zero.html">Day 0 — RAG From Zero</a>: what RAG is, chunks, embeddings, top-k, recall. Twenty minutes there saves an hour here.</p>
+</div>
+
+<div class="plain">
+<div class="label">What an ADR is, and why the week ends with one</div>
+<p>An <strong>ADR — Architecture Decision Record</strong> — is a one-page document that says: <em>here was the situation, here were the options, here's what we chose, here's why, and here's what we gave up.</em> It's written once, dated, and never edited; if the decision changes later you write a new one that supersedes it.</p>
+<p>The point is not documentation for its own sake. It's that in eighteen months someone — possibly you — will look at the pipeline and ask "why on earth is the overlap 60%?" Without an ADR the answer is a shrug, and the setting either stays forever out of superstition or gets changed by someone who doesn't know what it was protecting.</p>
+<p style="margin-bottom:0;"><strong>For interview purposes this is the deliverable that separates the levels.</strong> An engineer describes what they built. An architect produces a document where every number is traceable to a measurement and every decision names the evidence that would reverse it.</p>
+</div>
+
+<div class="plain">
+<div class="label">The week in six sentences, before the formal version</div>
+<p><strong>Day 0:</strong> RAG means finding the relevant passages and pasting them into the prompt. The model is the easy part.</p>
+<p><strong>Day 1:</strong> Cut documents into chunks. If an answer gets cut in half, that question is dead forever — and you buy the guarantee with <em>overlap</em>, which is paid once, not with <em>chunk size</em>, which is paid in every prompt.</p>
+<p><strong>Day 2:</strong> Search two ways. Word matching can't find "suicide" when the user typed "self-inflicted"; meaning matching returns the wrong form number with a confident score. Merge both lists with RRF.</p>
+<p><strong>Day 3:</strong> A second, slower model re-reads the top 100 alongside the question and re-sorts. It fixes ordering; it can never recover a chunk the first stage didn't return.</p>
+<p><strong>Day 4:</strong> Measure with a golden set — and check whether your golden set is even large enough to see the effect you're arguing about. Usually it isn't.</p>
+<p style="margin-bottom:0;"><strong>Day 5:</strong> The nastiest failure is retrieving three versions of the same clause and answering from whichever one turns up. Every metric says the answer is grounded, because it is.</p>
+</div>
 
 <p>Week 2 ended with ADR-002: <em>why pgvector</em>. That decision was about where vectors live. This one is about what happens between a user's question and the model's answer — five decisions, each with a number behind it rather than a preference.</p>
 

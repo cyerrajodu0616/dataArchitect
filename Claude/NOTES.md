@@ -1139,6 +1139,124 @@ the six lessons, only the intentional Week 4 forward link
 
 ---
 
+# WEEK 3 — REBUILT WITH A BEGINNER RAMP
+_Applied: 2026-08-15, at Yc's request: "recreate the week3 with more basics and think the
+audience as very less knowledge on ai, current tutorial material is super high technical and
+unable to correlate it."_
+
+Week 3 was written before the `beginner-ramp-then-architect-depth` preference existed (that came
+in with Week 4). It assumed the reader already knew what RAG was, and opened Day 1 on chunk
+geometry. **No depth was removed** — every number, SVG, script and quiz question is unchanged.
+The ramp is additive.
+
+## The main structural fix: a new Day 0
+`Claude/week3/day0/0013a-rag-from-zero.html` — the page the week was missing.
+
+Opens at absolute zero: what an LLM is (a next-word predictor, frozen at a date), why it can't
+know your documents, the **open-book-exam analogy** (fine-tuning = send the student back to
+school; RAG = the right page is open in front of them), and the corollary that matters —
+*a brilliant student with the wrong page still fails, so nearly every RAG quality problem is a
+page-finding problem, which is why the week spends five days on retrieval and none on the model.*
+
+Also: the actual prompt string with the context pasted in ("RAG is a prompt-construction problem
+wearing a search costume"), why you can't paste the whole corpus (three separate walls — 3.2B
+tokens vs a few hundred thousand · ~$800 per question at $0.25/M · accuracy falls with padding),
+a full glossary, and **a pipeline SVG annotated with which day owns which box.** That diagram is
+the direct fix for "unable to correlate it."
+
+Closes with the five failure modes mapped to Days 1–5, and the observation that **four of the
+five are data-engineering failures** (wrong grain, wrong index, no measurement, no versioning) —
+only the ranking one is what a newcomer would guess.
+
+## The running toy corpus — the thread that ties the week together
+Five short policy chunks (D1–D5, plus D6/D7 form-number chunks and D2·v1/v2/v3 versions) now
+recur in every lesson, so each day is the *same example* seen from a new angle rather than a
+fresh abstraction:
+
+| Day | What the running example does there |
+|---|---|
+| 0 | Full trace: keyword scores by hand → meaning-space picture → prompt → answer |
+| 1 | Same 38-word source text cut three ways; containment checked by hand |
+| 2 | Both arms scored by hand; IDF computed by hand; RRF computed by hand |
+| 3 | Five candidates reranked by hand — answer moves rank 4 → rank 1 |
+| 4 | Every metric derived by hand on the harness's own example |
+| 5 | Three versions of D2 with validity windows; the conflict traced stage by stage |
+
+### The hand-computed results now in the lessons (all verified)
+- **Day 1 §0** — answer span L=15. Cut A (C=14): formula says 0%, and by hand no chunk holds it.
+  Cut B (C=20, O=0): formula says **25%** — and our document *did* survive, because it was one
+  of the lucky alignments. **That gap is the reason to have the formula**: one test said "works",
+  the geometry says three documents in four would fail. Cut C (C=20, O=15 ≥ L): guaranteed, at
+  4× the chunk count.
+- **Day 2 §0** — Q1 "self-inflicted death": D3 (a correct answer) scores **zero** on word
+  matching, and D1 (wrong) *ties* with D2 (right). Stated explicitly: **IDF cannot fix this —
+  vocabulary mismatch is structural, not a weighting problem.** Q2 "ICC19-ADB-2": dense returns
+  the wrong form at rank 1 with a confident score. Then IDF by hand at N=5 (rider 0.54 ·
+  suicide 0.88 · colorado 1.39) → **D3 wins 2.26 with IDF, ties with D2 without it.**
+  The `trythis` adds D6/D7 and shows `colorado`'s IDF collapsing 1.39 → ~0.56 — *IDF is a
+  property of the corpus, so adding documents silently re-ranks everything.*
+- **Day 2 §5** — RRF computed by hand. **D2 wins by being 2nd and 1st, beating D3 which was 1st
+  outright.** Plus: every score is ~0.016 and gaps are in the fourth decimal — *RRF emits an
+  ordering, never a confidence; don't threshold on it.*
+- **Day 3 §0** — the answer sits at **rank 4** and would be cut at top-3; the cross-encoder moves
+  it to rank 1. The sharpest line is D6: *"used in all states **except** Colorado"* scores well
+  on both word overlap and embedding similarity, and only reading query-and-chunk together
+  catches that it's the opposite of relevant. **Negation is where a reranker visibly earns its
+  money** — a better interview answer than "the cross-encoder is a bigger model."
+- **Day 4 §0** — recall@5 0.667 · precision@5 0.400 · MRR 0.500 · **nDCG@5 0.453 derived in three
+  steps** (DCG 2.666 / IDCG 5.893), matching `rag_eval_harness.py` exactly. Then the point of it:
+  the same 0.453 is consistent with a *ranking* failure (chunk 4 at position 2) and a *retrieval*
+  failure (chunk 15 never returned) — different fixes, so **report recall alongside nDCG or you
+  will buy a reranker to solve a chunking problem.**
+- **Day 5 §0** — D2·v1/v2/v3 with validity windows, traced stage by stage, every stage reporting
+  healthy. The `trythis` kills the obvious fix: the policy was issued in **2020**, so the correct
+  source is **v1, the oldest** — *"prefer the most recent" gives the wrong answer faster.*
+
+## Anchors added (the where-it-breaks half is the load-bearing part)
+| Day | Anchor | Where it breaks |
+|---|---|---|
+| 0 | RAG = a lookup joined onto a request path; ingest is ETL, query is `SELECT … LIMIT k` | A join can return zero rows. This **always** returns k — there is no "no match", and building that signal back is real work |
+| 1 | Chunk size **is grain** — one row per order vs per order line, chosen at load, changed by reload | A fact table's grain comes from the business; a document has no natural grain, and two consumers want different ones |
+| 2 | Sparse = inverted index; dense = nearest-neighbour in a feature space | Your inverted index returns nothing when nothing matches — honest. Dense returns ten neighbours with good-looking scores |
+| 3 | Cheap index filter + expensive predicate on the survivors | A SQL index filter is **lossless**; stage one here is **lossy** — so the number that matters is what survived it, and that's a ceiling |
+| 4 | Golden set = a regression-test fixture with expected output | The fixture is deterministic; every query here is a **noisy sample**, so "did it improve" is a statistics question |
+| 5 | **Type-2 SCD with no validity window on the join** | In SQL you'd get three rows and notice. Here you get one confident paragraph — *an SCD problem made unobservable* |
+
+Day 1 also anchors chunking strategy to **fixed-width vs delimiter-aware parsing**, and
+small-to-big to **a narrow index over a wide table** (child→parent is a b-tree lookup, not a
+second vector search). Day 3 anchors picking N to **diminishing returns on a scan window**.
+
+## Plain-words boxes added at the points that were densest
+- **Day 1** — chunking = deciding where to cut; the three-case reading of the geometry formula
+  *before* the algebra; **two bills moving in opposite directions** (index monthly vs prompt
+  per-query, hence the U-shape); overlap-vs-chunk-size as **one-off capital cost vs per-query
+  operating cost**; the four strategies in one line each; small-to-big in one sentence.
+- **Day 2** — the two search families; **BM25 read as three sentences before it's read as maths**
+  (is the word rare / does it repeat, with the volume turned down / is the chunk suspiciously
+  long — `k₁` and `b` are the only dials); why you can't just add the two scores (47 + 0.83 is
+  arithmetic on incompatible units).
+- **Day 3** — fast-and-sloppy then slow-and-careful; **a straight cost line against a flattening
+  benefit curve always crosses**, so "push N as high as latency allows" is arithmetically wrong,
+  not a judgement call.
+- **Day 4** — the MDE formula in words, with **the square root as the whole story** (half the
+  effect → 4× the queries), and why you run it *before* labelling.
+- **Day 6-7** — what an ADR is and why it exists ("in eighteen months someone asks why the
+  overlap is 60%"), plus **the whole week recapped in six sentences.**
+
+## Also
+- Nav rewired: Week 2 ADR-002 → **Day 0** → Day 1 → … Days 2–6/7 each carry a "read Day 0 first"
+  pointer so any entry point leads back to the primer.
+- Two pre-existing bugs fixed while verifying: a missing `</tr>` in Day 3 §5's routing table,
+  and a broken relative link in `week1/day2` (`./0001-…` → `../day1/0001-…`).
+
+## Verification
+All 7 Week 3 pages parse clean (tag nesting + every SVG through an XML parser), all internal
+links resolve except the intentional Week 5 forward link, and all 6 companion scripts still run.
+Day 4's hand-derived metrics were checked against `rag_eval_harness.py` output line by line.
+Week 3 is now **7 lessons, 77 sections, 43 quiz questions.**
+
+---
+
 # WEEK 4 — AGENT ORCHESTRATION
 
 Built at Yc's request with an explicit audience change: **"consider the audience as pretty new

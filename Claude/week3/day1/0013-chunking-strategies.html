@@ -25,6 +25,27 @@
   .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
   .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
 
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:56px; }
+
   /* --- domain parallel blocks (retail / insurance / fintech) --- */
   .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
   .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
@@ -58,7 +79,122 @@
 <body>
 
 <h1>Chunking Strategies — The Decision Made Before Retrieval Exists</h1>
-<p class="subtitle">Week 3, Day 1 — chunk size as a joint quality and cost decision, with the arithmetic</p>
+<p class="subtitle">Week 3, Day 1 — cutting documents into pieces: by hand first, then the arithmetic</p>
+
+<div class="plain">
+<div class="label">New to this? Read Day 0 first</div>
+<p>This lesson assumes you know what RAG is and what a chunk, an embedding and top-k are. If any of those are fuzzy, spend twenty minutes on <a href="../day0/0013a-rag-from-zero.html">Day 0 — RAG From Zero</a> and come back. It defines every term and traces one query end to end by hand.</p>
+</div>
+
+<div class="plain">
+<div class="label">What today is about, in plain words</div>
+<p>You cannot put a 400-page policy document into a search index as one lump. It's too big to paste into a prompt, and one set of numbers can't represent 400 pages of different topics. So you <strong>cut it into pieces</strong> — paragraph-sized. Each piece gets its own embedding and becomes one row you can search for.</p>
+<p><strong>Chunking is just deciding where to cut.</strong> How big is each piece? Do consecutive pieces overlap? Do you cut on word count, or on paragraph breaks, or on the document's own headings?</p>
+<p>It sounds like a formatting detail. It is the most consequential decision in the whole pipeline, for one reason: <strong>if the answer to a question gets cut in half, that question is unanswerable forever.</strong> No better model, no smarter search, no reranker recovers it. The information was destroyed before anything else in the system existed.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know</div>
+<p>Chunk size is <strong>grain</strong>. It is exactly the decision you make when you define a fact table: one row per order, or one row per order line? You already know how that conversation goes — finer grain means more rows, more storage, more precise filtering, and more work to reassemble the whole picture.</p>
+<p><strong>Where the analogy holds, usefully:</strong> grain is chosen once, at load time, and changing it is a full reload. Same here — changing chunk size means re-embedding the entire corpus. It is not a config flag you tune in production.</p>
+<p style="margin-bottom:0;"><strong>Where it breaks:</strong> a fact table's grain is set by the business process, and there's usually one defensible answer. Here there is no natural grain at all — a document doesn't come with rows. You are inventing the grain, and two different consumers want two different ones. That tension is §1, and §9 resolves it.</p>
+</div>
+
+<dl class="glossary">
+  <dt>chunk size (C)</dt>
+  <dd><strong>Plain:</strong> how many tokens go in one piece. <em>Rough feel:</em> 200 tokens ≈ one paragraph; 800 ≈ one page; 1,600 ≈ two pages.</dd>
+
+  <dt>overlap (O)</dt>
+  <dd><strong>Plain:</strong> how much of the end of one chunk is repeated at the start of the next. Overlap of 50 means the last 50 tokens of chunk 7 are also the first 50 tokens of chunk 8. Text stored twice, on purpose.</dd>
+
+  <dt>stride (S = C − O)</dt>
+  <dd><strong>Plain:</strong> how far the window moves each time. With no overlap the stride equals the chunk size. With big overlap the stride is small and you get many more chunks — <em>the number of chunks is driven by stride, not by chunk size.</em> That one fact explains most of the cost arithmetic below.</dd>
+
+  <dt>answer span (L)</dt>
+  <dd><strong>Plain:</strong> how long the actual answer text is. The passage a human would highlight. "30 days" is a short span; a whole exclusion clause with its carve-outs is a long one. <strong>This is the number that decides everything, and almost nobody measures it.</strong></dd>
+
+  <dt>containment</dt>
+  <dd><strong>Plain:</strong> did the answer land entirely inside one chunk, or did a boundary cut through it? Either it survived or it didn't.</dd>
+
+  <dt>signal density (L / C)</dt>
+  <dd><strong>Plain:</strong> what fraction of the retrieved chunk is actually the answer. The rest is padding you pay for twice — once in index memory, again in every prompt.</dd>
+</dl>
+
+<h2>0. Start Here — Cutting One Document Up By Hand</h2>
+
+<p>Before any formulas: take the running example from Day 0 as raw text and cut it three ways. Small enough to check every word yourself.</p>
+
+<div class="corpus">
+<div class="chead">The source text — 38 words, numbered</div>
+<table>
+  <tr><td class="id">1–14</td><td>The Accidental Death Benefit Rider pays an additional benefit equal to the face amount.</td></tr>
+  <tr><td class="id">15–29</td><td>This rider does not pay if death results from suicide within two years of issue.</td></tr>
+  <tr><td class="id">30–38</td><td>In Colorado the suicide exclusion period is one year.</td></tr>
+</table>
+</div>
+
+<p>The question we care about: <strong>"how long is the suicide exclusion for a Colorado policy?"</strong></p>
+
+<p>To answer that correctly you need both the standard rule <em>and</em> the carve-out — words <strong>24 to 38</strong>: <em>"suicide within two years of issue. In Colorado the suicide exclusion period is one year."</em> That's an <strong>answer span of 15 tokens.</strong> Hold that number.</p>
+
+<p><em>(One word ≈ one token here to keep it countable. Real tokenizers produce roughly 4 tokens per 3 words, which doesn't change any of the reasoning.)</em></p>
+
+<h3>Cut A — 14-token chunks, no overlap</h3>
+
+<div class="code-inline">A1  [words  1-14]  The Accidental Death Benefit Rider pays an additional benefit
+                  equal to the face amount.
+A2  [words 15-28]  This rider does not pay if death results from suicide within
+                  two years of
+A3  [words 29-38]  issue. In Colorado the suicide exclusion period is one year.</div>
+
+<p>Look for a chunk containing words 24–38. There isn't one. A2 stops at word 28, A3 starts at 29. <strong>The answer is split across two chunks and no single chunk answers the question.</strong></p>
+
+<p>Worse, it fails <em>silently and confidently</em>. Search for "suicide exclusion" and A3 scores highest — it has three of the words. The model reads A3, sees "one year", and answers "one year." Which happens to be right for Colorado and <em>wrong for the other 49 states</em>, and the system has no idea it only saw half the rule.</p>
+
+<h3>Cut B — 20-token chunks, no overlap</h3>
+
+<div class="code-inline">B1  [words  1-20]  The Accidental Death Benefit Rider pays an additional benefit
+                  equal to the face amount. This rider does not
+B2  [words 21-38]  pay if death results from suicide within two years of issue.
+                  In Colorado the suicide exclusion period is one year.</div>
+
+<p>Now B2 contains words 21–38, which includes all of 24–38. <strong>The answer survives.</strong></p>
+
+<div class="caution">
+<div class="label">But notice <em>why</em> it survived — this is the trap</div>
+Not because 20 is the right chunk size. Because the boundary happened to land at word 20 instead of somewhere between 24 and 38. Shift the document by four words — add a sentence at the top — and the same setting splits the same answer.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>Cut B is luck, not design.</strong> This is the single most important thing to understand about fixed-size chunking, and it comes back with data in §6, where the fixed chunker scores 3/3 at 90 tokens and drops to 2/3 at 120.</p>
+</div>
+
+<h3>Cut C — 20-token chunks with 15 tokens of overlap</h3>
+
+<p>Stride is <code>20 − 15 = 5</code>, so a new chunk starts every 5 words:</p>
+
+<div class="code-inline">C1  [words  1-20]   The Accidental Death Benefit Rider pays an additional...
+C2  [words  6-25]   pays an additional benefit equal to the face amount. This...
+C3  [words 11-30]   to the face amount. This rider does not pay if death...
+C4  [words 16-35]   rider does not pay if death results from suicide within...
+C5  [words 21-38]   pay if death results from suicide within two years of issue.
+                    In Colorado the suicide exclusion period is one year.
+    ...</div>
+
+<p>C5 contains the span. But this time it isn't luck — and here is the point of the whole day:</p>
+
+<div class="verdict">
+<div class="label">The guarantee</div>
+Overlap is <strong>15</strong>. The answer span is <strong>15</strong>. When overlap is at least as long as the answer span, <strong>there is always a chunk containing any span that short</strong> — wherever it happens to sit in the document. Shift the text, add a paragraph, reformat the PDF: still guaranteed.
+<p style="margin-top:0.7rem;margin-bottom:0;">That's not "overlap helps a bit". It is a threshold you can design against, and §2 derives it properly.</p>
+</div>
+
+<p>What it costs: the stride dropped from 20 to 5, so you get <strong>4× as many chunks</strong> for the same document. Four times the rows, four times the index memory. Whether that's a good trade is §3 and §5 — and the answer turns out to be yes, overwhelmingly, for a reason most guidance misses.</p>
+
+<div class="trythis">
+<div class="label">Try this — 60 seconds, no computer</div>
+Take Cut A and ask a <em>different</em> question: <strong>"what does the Accidental Death Benefit Rider pay?"</strong> The answer span is words 1–14 — 14 tokens, and A1 is exactly words 1–14. It survives perfectly at a chunk size that catastrophically fails the other question.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>Same document, same chunking, two questions, opposite outcomes.</strong> That is why there is no universal best chunk size, and why §10 says report your evaluation per query class rather than as one average.</p>
+</div>
+
+<h2>0.5. The Bridge From Week 2</h2>
 
 <p>Week 2 ended by naming eight questions that determine a retrieval architecture. Question 2 was <em>chunks per document</em>, and it was flagged as <strong>a decision, not a fact</strong> — one with a 2–4× infrastructure multiplier, settled before a single row is indexed. This lesson pays that off.</p>
 
@@ -99,12 +235,30 @@
 
 <p>Here is the part that is usually hand-waved as "overlap preserves context." It is derivable, and the derivation gives you an actual threshold to design against.</p>
 
+<div class="plain">
+<div class="label">What we're about to prove, before the algebra</div>
+<p>§0 showed three cuts of one document: one where the answer was split, one where it survived by luck, and one where it survived by construction. The formula below just says <em>which of those three you are in</em>, for any settings, without needing to lay the document out on a table.</p>
+<p>There are exactly three cases and they're intuitive:</p>
+<p style="margin-bottom:0;"><strong>1.</strong> Chunk smaller than the answer → <em>impossible</em>, always split.<br>
+<strong>2.</strong> Chunk bigger than the answer but overlap smaller → <em>sometimes</em>, depends where the boundary lands. This is the luck case.<br>
+<strong>3.</strong> Overlap at least as long as the answer → <em>always</em>, guaranteed, no luck involved. This is Cut C.</p>
+</div>
+
 <p>Let the answer be a contiguous span of <strong>L</strong> tokens. Chunks are <strong>C</strong> tokens with overlap <strong>O</strong>, so chunk <em>i</em> covers <code>[iS, iS+C)</code> where the stride is <code>S = C − O</code>. The span starting at <em>p</em> is fully inside chunk <em>i</em> exactly when <code>iS ≤ p</code> and <code>p + L ≤ iS + C</code> — that is, <code>iS ≤ p ≤ iS + C − L</code>. So of every <em>S</em> positions, <code>min(S, C−L)</code> are safe:</p>
 
 <div class="math-box">
 P(answer survives) = 1 &nbsp;&nbsp;if O &#8805; L<br>
 P(answer survives) = (C &#8722; L) / (C &#8722; O) &nbsp;&nbsp;if O &lt; L &lt; C<br>
 P(answer survives) = 0 &nbsp;&nbsp;if L &#8805; C
+</div>
+
+<div class="plain">
+<div class="label">Check it against the three cuts you just did by hand</div>
+<p>Answer span <code>L = 15</code> in all three.</p>
+<p><strong>Cut A</strong> — <code>C = 14</code>, so <code>L &#8805; C</code> → <strong>0%</strong>. Matches: no chunk could hold it.<br>
+<strong>Cut B</strong> — <code>C = 20, O = 0</code> → <code>(20 &#8722; 15) / 20</code> = <strong>25%</strong>. And yet ours survived — because our document happened to be one of the lucky one-in-four alignments. <em>The formula is telling you the thing your single test could not: three documents in four would have failed.</em><br>
+<strong>Cut C</strong> — <code>O = 15 &#8805; L = 15</code> → <strong>100%</strong>. Guaranteed, alignment-independent.</p>
+<p style="margin-bottom:0;">That middle line is the reason to have the formula at all. Testing one document told you "it works". The geometry tells you it works 25% of the time.</p>
 </div>
 
 <div class="verdict">
@@ -159,6 +313,19 @@ P(answer survives) = 0 &nbsp;&nbsp;if L &#8805; C
 </table>
 
 <h2>3. Where the Money Actually Is</h2>
+
+<div class="plain">
+<div class="label">Two bills, and they move in opposite directions</div>
+<p>Chunk size changes what you pay in two completely separate places, and this is the bit that trips people up:</p>
+<p><strong>Bill 1 — the index.</strong> Every chunk is a row with a 1,536-number vector attached, and those rows need to sit in memory. Smaller chunks → more chunks → <em>this bill goes up</em>. You pay it monthly regardless of traffic.</p>
+<p><strong>Bill 2 — the prompt.</strong> Every question pastes k chunks into the prompt, and you are billed per token sent. Bigger chunks → more tokens per question → <em>this bill goes up</em>. You pay it <em>per query</em>, so it scales with how busy you are, not with how much data you have.</p>
+<p style="margin-bottom:0;">Shrink the chunks and bill 1 rises while bill 2 falls. Add them together and the total has a <strong>dip in the middle</strong> — a cheapest chunk size. Optimise only one bill and you land at the wrong end of the curve.</p>
+</div>
+
+<div class="anchor">
+<div class="label">The mistake this prevents</div>
+Costing only the index is the natural instinct coming out of Week 2, and it is how you end up recommending big chunks. Big chunks <em>do</em> minimise the index — and at 1,600 tokens the index is about <strong>1.2% of the total bill</strong>. You would be carefully optimising the smaller number while the larger one triples. Same shape as tuning a nightly batch job while the interactive path burns the budget.
+</div>
 
 <p>Week 2 costed the index. For a RAG system that is the small number. Retail, at 20 QPS peak on the agent path (<em>not</em> the 500 QPS product-search path — that distinction is worth 25× on this bill):</p>
 
@@ -254,6 +421,14 @@ The U-shape above assumes <strong>fixed k</strong>: always retrieve 8 chunks, so
 
 <h2>5. Buy Containment With Overlap, Not With Chunk Size</h2>
 
+<div class="plain">
+<div class="label">The choice, in plain words</div>
+<p>You've decided answers must stop getting split. Two ways to get there, and they look equivalent on a quality chart:</p>
+<p><strong>Option 1 — make every chunk bigger.</strong> A 1,600-token chunk will contain a 300-token answer. But now every question that retrieves it pastes 1,600 tokens into the prompt, and you pay for that <em>every single time anyone asks anything</em>, forever.</p>
+<p><strong>Option 2 — keep chunks small and overlap them heavily.</strong> Store the text several times over. You pay for the extra rows once, at ingest, as storage. The prompt stays small.</p>
+<p style="margin-bottom:0;"><strong>One is a one-off capital cost, the other is a per-query operating cost.</strong> Since the prompt bill runs 20–80× the infrastructure bill in every domain here, option 2 wins — and it is not what the conventional "use 10–20% overlap" advice tells you to do.</p>
+</div>
+
 <p>There are two ways to stop splitting answers, and they are priced completely differently:</p>
 
 <table class="matrix-table">
@@ -318,6 +493,19 @@ The U-shape above assumes <strong>fixed k</strong>: always retrieve 8 chunks, so
 </div>
 
 <h2>6. The Four Strategies</h2>
+
+<div class="plain">
+<div class="label">Four ways to decide where to cut — in one line each</div>
+<p><strong>Fixed-size:</strong> count to 200 and cut. Doesn't care what it's cutting through — mid-sentence, mid-word, mid-clause. This is Cut A and Cut B from §0.</p>
+<p><strong>Recursive:</strong> try to cut at a blank line; if the piece is still too big, cut at a line break; then at a full stop; then, grudgingly, at a space. Take the biggest natural break that fits.</p>
+<p><strong>Sentence / semantic:</strong> never cut inside a sentence. The "semantic" version goes further — it embeds every sentence and cuts where the topic visibly shifts.</p>
+<p style="margin-bottom:0;"><strong>Structure-aware:</strong> use the document's own headings and numbered sections as the boundaries, <em>and stamp the section path onto each chunk</em>. Cut C wouldn't just be words 21–38; it would be words 21–38 labelled <em>"ACCIDENTAL DEATH BENEFIT RIDER › §4.2 Exclusions"</em>.</p>
+</div>
+
+<div class="anchor">
+<div class="label">You have already made this exact choice</div>
+This is <strong>fixed-width parsing versus delimiter-aware parsing</strong>. Splitting a CSV on every 80th character works right up until a field contains a comma; splitting on the actual delimiter respects the structure the file already has. Structure-aware chunking is the same instinct applied to prose — and just like with a CSV, the win comes from using metadata the source already provided rather than inventing boundaries.
+</div>
 
 <table class="matrix-table">
   <tr><th>Strategy</th><th>How it works</th><th>Advantages</th><th>Disadvantages</th><th>Choose it when</th></tr>
@@ -430,6 +618,18 @@ Every chunking change is a full re-embed unless you can tell which chunks actual
 </div>
 
 <h2>9. Small-to-Big: Stop Making One Object Do Both Jobs</h2>
+
+<div class="plain">
+<div class="label">The idea in one sentence</div>
+<p><strong>Search the small pieces, but send the big piece to the model.</strong></p>
+<p>Cut the document twice. Once into small 200-token children — those are what you embed and search, because a small piece has a sharp, single-topic embedding. Once into large 1,600-token parents — those are never embedded at all, just stored as text.</p>
+<p style="margin-bottom:0;">When a child wins the search, you don't send the child. You look up its parent and send that. Retrieval gets precision; the model gets the whole clause with its exceptions attached.</p>
+</div>
+
+<div class="anchor">
+<div class="label">The pattern you already use</div>
+This is <strong>a narrow index over a wide table.</strong> You index the few columns you filter on, find the row ids, then fetch the full wide row by primary key. Nobody would put every column in the index. Small-to-big is the same move: the child chunks <em>are</em> the index, the parent text is the row, and the child→parent hop is a plain b-tree lookup — <strong>not</strong> a second vector search.
+</div>
 
 <p>Back to §1. The tension exists only because we assumed the retrieved unit and the generated-over unit are the same object. They don't have to be.</p>
 
@@ -623,7 +823,7 @@ python chunker_compare.py --size 50 --show-chunks   # see where it breaks</div>
 <p class="ask-agent">Want help measuring your own answer-span distribution, building the span-dedup step, or wiring the parent/child schema into an existing pgvector table? Ask in your chat session.</p>
 
 <div class="nav">
-<a href="../../week2/day6-7/0012-checkpoint-pgvector-justification.html">&larr; Week 2 Day 6-7: ADR-002</a>
+<a href="../day0/0013a-rag-from-zero.html">&larr; Day 0: RAG From Zero</a>
 <a href="../day2/0014-dense-sparse-hybrid.html">Day 2: Dense vs Sparse vs Hybrid &rarr;</a>
 </div>
 

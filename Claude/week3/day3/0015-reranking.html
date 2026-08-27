@@ -37,12 +37,115 @@
   .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
   .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
   @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:44px; }
 </style>
 </head>
 <body>
 
 <h1>Reranking — The Ceiling, The Bill, and Where They Cross</h1>
-<p class="subtitle">Week 3, Day 3 — why a reranker cannot fix recall, and how to pick N without overpaying</p>
+<p class="subtitle">Week 3, Day 3 — the second opinion: what it fixes, what it can't, and what it costs</p>
+
+<div class="plain">
+<div class="label">New to this? Read Day 0 first</div>
+<p>This lesson assumes the vocabulary from <a href="../day0/0013a-rag-from-zero.html">Day 0 — RAG From Zero</a>: what RAG is, chunks, embeddings, top-k, recall. Twenty minutes there saves an hour here.</p>
+</div>
+
+<div class="plain">
+<div class="label">What today is about, in plain words</div>
+<p>Yesterday's search is <strong>fast and a bit sloppy</strong>. It has to be — it's comparing your question against millions of chunks in under a hundred milliseconds, so it uses a shortcut: every chunk was turned into numbers <em>long before your question existed</em>, and matching is just "which points are nearest".</p>
+<p>That shortcut means the first search can't do the thing a human does instantly: <em>read the question and the chunk side by side and judge whether one answers the other.</em></p>
+<p><strong>So you do it in two passes.</strong> Pass one grabs 100 plausible chunks, fast and sloppy. Pass two takes those 100, reads each one properly <em>together with</em> the question, and re-sorts them. You keep the best 5. Pass two is the <strong>reranker</strong>.</p>
+<p style="margin-bottom:0;">And the one thing you must internalise before anything else: <strong>the reranker can only reorder what pass one handed it.</strong> If the right chunk wasn't in the 100, no amount of reranking conjures it up.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know</div>
+<p>This is a <strong>query plan with a cheap filter and an expensive predicate</strong>. You never run the expensive function over the whole table — you use an index to get a small candidate set, then apply the costly check to the survivors. Same reason, same shape, same trade.</p>
+<p><strong>Where it holds:</strong> the expensive predicate is exact, the cheap one is approximate, and the whole design exists because you can't afford the exact one at full table scale.</p>
+<p style="margin-bottom:0;"><strong>Where it breaks — and it's the point of the day:</strong> in SQL, the index filter is <em>lossless</em>. Rows it excludes genuinely don't match. Here, pass one is <em>lossy</em>: it will silently drop rows that were the correct answer. So the interesting number is not "how good is the reranker" but <strong>"what fraction of correct answers survived pass one"</strong> — and that is a ceiling nothing downstream can raise.</p>
+</div>
+
+<dl class="glossary">
+  <dt>N (candidate count)</dt>
+  <dd><strong>Plain:</strong> how many chunks pass one hands to pass two. 50, 100, 200. This is the single dial that sets both quality ceiling and cost.</dd>
+
+  <dt>k (final count)</dt>
+  <dd><strong>Plain:</strong> how many survive into the prompt. Usually 3–8. Small, because prompt tokens are the expensive bill (Day 1 §3).</dd>
+
+  <dt>recall@N</dt>
+  <dd><strong>Plain:</strong> of all the questions you tried, what fraction had a correct chunk somewhere in the N that pass one returned? <strong>This is the ceiling.</strong> recall@100 = 0.72 means 28% of questions are already unanswerable before the reranker starts work.</dd>
+
+  <dt>precision</dt>
+  <dd><strong>Plain:</strong> of what you finally send, how much is actually relevant. This is what the reranker improves.</dd>
+
+  <dt>bi-encoder</dt>
+  <dd><strong>Plain:</strong> the pass-one model. Encodes question and chunk <em>separately</em>, so every chunk can be encoded in advance and stored. That's why it's fast — and why it never sees the pair together.</dd>
+
+  <dt>cross-encoder</dt>
+  <dd><strong>Plain:</strong> the pass-two model. Reads question and chunk glued into <em>one</em> input, so it can notice that the question says "Colorado" and this chunk says "except Colorado". Nothing can be precomputed — the pair didn't exist until the question arrived — so it costs one model call <em>per candidate, per query</em>.</dd>
+</dl>
+
+<h2>0. Start Here — Reranking the Running Example By Hand</h2>
+
+<p>Question, and the top 5 that pass one returned:</p>
+
+<div class="code-inline">Q: "does the suicide exclusion apply to a Colorado policy?"
+
+  pass one (fast, approximate) returned, in this order:
+  1. D2   This rider does not pay if death results from suicide within two years of issue.
+  2. D6   Form ICC19-ADB-1 is the accidental death benefit rider used in all states
+          except Colorado.
+  3. D1   The Accidental Death Benefit Rider pays an additional benefit equal to the
+          face amount.
+  4. D3   In Colorado the suicide exclusion period is one year.
+  5. D7   Form ICC19-ADB-2 is the Colorado variant of the accidental death benefit rider.</div>
+
+<p>You are about to send the top 3 to the model. Look at what that gives you: D2, D6, D1 — the general rule, an unrelated form note, and a chunk about payout amounts. <strong>D3, the chunk that actually answers the question, is sitting at rank 4 and will be cut.</strong></p>
+
+<p>Why did pass one get it wrong? Because D2's embedding is a strong general match for "suicide exclusion", while D3 is a short, terse sentence whose embedding is pulled around by "Colorado" and "one year". Pass one never compared D3 <em>against this question</em>; it compared two points computed independently.</p>
+
+<h3>Now pass two reads each pair properly</h3>
+
+<table class="matrix-table">
+  <tr><th>Chunk</th><th>What a cross-encoder can see that the first stage could not</th><th>New score</th></tr>
+  <tr><td><strong>D3</strong></td><td>The question asks about <em>Colorado</em> specifically. This chunk is about <em>Colorado</em> specifically, and states the exclusion period. Direct answer.</td><td class="yes">0.94 → <strong>rank 1</strong></td></tr>
+  <tr><td><strong>D2</strong></td><td>States the exclusion but says nothing about Colorado. Necessary background, not the answer.</td><td>0.71 → rank 2</td></tr>
+  <tr><td>D7</td><td>Mentions Colorado and the rider, but only identifies which form applies. Adjacent, not responsive.</td><td class="partial">0.38 → rank 3</td></tr>
+  <tr><td>D6</td><td>Says "except Colorado" — <em>excludes</em> the case being asked about. A word-overlap or embedding score can't tell "except Colorado" from "in Colorado"; reading both together can.</td><td class="no">0.21 → rank 4</td></tr>
+  <tr><td>D1</td><td>About payout amount. Shares the topic, answers nothing.</td><td class="no">0.09 → rank 5</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">What just happened, and what didn't</div>
+<strong>What happened:</strong> the answer moved from rank 4 to rank 1. Same candidates, same question — the only change is that a model was allowed to look at the question and the chunk <em>at the same time</em>. Take the top 3 now and you get D3, D2, D7: the answer, its context, and the form reference. That is a genuinely good prompt.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>What did not happen:</strong> nothing new entered the list. If D3 had been at rank 140 instead of rank 4, and pass one only returned 100, the reranker would have produced a beautifully ordered list of five wrong answers — and every latency and error-rate dashboard would have been green.</p>
+</div>
+
+<div class="trythis">
+<div class="label">Try this — the D6 line is the interesting one</div>
+Look at D6 again: <em>"...used in all states <strong>except</strong> Colorado."</em> For word matching it contains "Colorado", "rider", "accidental death" — it scores <em>well</em>. For an embedding it's a near-neighbour of D7, which is correct. It takes reading the question and the chunk together to notice that "except Colorado" makes it the opposite of relevant.
+<p style="margin-top:0.7rem;margin-bottom:0;"><strong>Negation is the clearest case where a reranker earns its money</strong>, and it's worth having in your pocket for an interview — "our first stage can't represent negation because the document was encoded before the query existed" is a much better answer than "the cross-encoder is a bigger model".</p>
+</div>
 
 <p>A reranker is a second-stage model that re-scores the candidates the first stage returned. It is the highest-leverage single addition to most RAG pipelines, and it is also the component most often added for the wrong reason.</p>
 
@@ -144,6 +247,19 @@ achievable quality &#8804; recall@N &nbsp;&nbsp;&nbsp; prize = recall@N &#8722; 
 </table>
 
 <h2>3. Cost Is Linear. Quality Saturates. Therefore There Is an Optimum.</h2>
+
+<div class="plain">
+<div class="label">The decision in plain words, before the curves</div>
+<p>You have to pick <strong>N</strong> — how many candidates pass one hands over. Bigger N means the right chunk is more likely to be in there, and means more model calls to pay for.</p>
+<p>Here's the thing that makes it decidable rather than a matter of taste. <strong>The cost side is a straight line</strong>: 100 candidates costs exactly twice what 50 costs, forever, no exceptions — one model call per candidate.</p>
+<p><strong>The benefit side flattens out.</strong> Going from 10 candidates to 50 rescues a lot of answers that were sitting at rank 23. Going from 500 to 1,000 rescues almost none — anything ranked 700th by the first stage was never really a candidate.</p>
+<p style="margin-bottom:0;">A straight line against a flattening curve <em>always</em> crosses somewhere. So the usual approach — <em>"push N as high as the latency budget allows"</em> — isn't a judgement call you can defend. It is arithmetically the wrong answer, and §3 puts a dollar figure on how wrong.</p>
+</div>
+
+<div class="anchor">
+<div class="label">You have made this exact call before</div>
+This is <strong>diminishing returns on a scan window</strong> — the same reasoning as deciding how many partitions to prefetch, or how far back a late-arriving-data window should reach. Each extra unit costs the same and rescues fewer records than the last. The discipline is identical: don't ask "what can I afford", ask "<em>what does the next increment cost me per unit of quality it actually returns</em>". That per-increment column is what makes the decision here too.
+</div>
 
 <p>This is the part that decides N, and it follows from two facts that are true of every reranker:</p>
 
@@ -270,7 +386,7 @@ At 512-token chunks, <strong>even N=25 blows a 2-second budget</strong> — the 
 
 <table class="matrix-table">
   <tr><th>Query class</th><th>Rerank?</th><th>Why</th></tr>
-  <tr><td><code>EXACT_ID</code> — SKU, form number, reason code</td><td class="no">No</td><td>The lexical arm either found it or it doesn't exist. There is nothing to reorder, and headroom is ~0.</td>
+  <tr><td><code>EXACT_ID</code> — SKU, form number, reason code</td><td class="no">No</td><td>The lexical arm either found it or it doesn't exist. There is nothing to reorder, and headroom is ~0.</td></tr>
   <tr><td><code>NAVIGATIONAL</code> — brand or category browse</td><td class="no">No</td><td>Ordering is driven by business rules — stock, margin, popularity — not semantic relevance.</td></tr>
   <tr><td><code>NATURAL_LANGUAGE</code> — questions, descriptions</td><td class="yes">Yes</td><td>Exactly the class with a large <code>recall@k</code> → <code>recall@N</code> gap. All of the headroom lives here.</td></tr>
   <tr><td><code>AMBIGUOUS</code> — short, underspecified</td><td class="yes">Yes</td><td>First-stage ordering is close to arbitrary; the reranker has the most to add.</td></tr>

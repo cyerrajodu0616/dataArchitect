@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0013a — RAG From Zero: What We Are Actually Building</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+
+  /* --- the running toy corpus, reused all week --- */
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:44px; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>RAG From Zero — What We Are Actually Building</h1>
+<p class="subtitle">Week 3, Day 0 — read this first. Every term defined, one tiny example traced by hand, and a map of where the other six days sit.</p>
+
+<div class="plain">
+<div class="label">Start here — the one-paragraph version</div>
+<p>You have a chat model. It writes well and it knows a great deal about the public internet up to some cut-off date. It knows <strong>nothing</strong> about your policy forms, your product catalogue, or last Tuesday's rate change — because none of that was in its training data and never will be.</p>
+<p><strong>RAG</strong> (Retrieval-Augmented Generation) is the fix, and the fix is embarrassingly simple: <em>before you ask the model your question, go find the relevant pages from your own documents and paste them into the question.</em></p>
+<p>That's it. Search, then paste, then ask. Everything in Week 3 is engineering around those three words — how to cut the documents up so the search works, how to search, how to pick the best few, how to know if it's working, and how it fails.</p>
+</div>
+
+<h2>1. Why the Model Can't Just Know Your Documents</h2>
+
+<p>A large language model is, mechanically, a <strong>next-word predictor</strong>. It was shown an enormous amount of text and trained to guess what comes next. Do that well enough and you get something that answers questions, writes code, and summarises documents — but the knowledge it has is <em>baked into its weights</em> at training time and frozen there.</p>
+
+<p>That gives you two hard gaps:</p>
+
+<table class="matrix-table">
+  <tr><th>Gap</th><th>Example</th><th>Why the model can't close it</th></tr>
+  <tr>
+    <td><strong>Private data</strong></td>
+    <td>"What does policy form ICC19-ADB say about the suicide exclusion in Colorado?"</td>
+    <td>Your filed forms were never public. They were not in the training data.</td>
+  </tr>
+  <tr>
+    <td><strong>Fresh data</strong></td>
+    <td>"Is SKU-88213 in stock?" · "What did we change in the January rate filing?"</td>
+    <td>Training finished on a date. Everything after it does not exist as far as the model is concerned.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">The failure mode that makes this urgent</div>
+A model that doesn't know something usually <strong>does not say so</strong>. It produces a fluent, confident, plausible answer that is simply invented. This is called <em>hallucination</em>, and the dangerous part is not that it's wrong — it's that <strong>wrong output and right output look identical.</strong> There is no tone of voice that means "I made this up."
+<p style="margin-top:0.7rem;margin-bottom:0;">In retail that costs you a refund. In life insurance an invented exclusion clause is a regulatory finding. This is the entire reason the rest of the week cares so much about measurement.</p>
+</div>
+
+<h3>Three ways to give a model your knowledge, and why two of them lose</h3>
+
+<table class="matrix-table">
+  <tr><th>Approach</th><th>In plain words</th><th>Verdict</th></tr>
+  <tr>
+    <td><strong>Train your own model</strong></td>
+    <td>Build a model from scratch on your data.</td>
+    <td class="no">No. Tens of millions of dollars and a research team, to end up behind the frontier.</td>
+  </tr>
+  <tr>
+    <td><strong>Fine-tune</strong></td>
+    <td>Take an existing model and nudge its weights with your examples.</td>
+    <td class="partial">Excellent for teaching <em>style, format and task shape</em>. Poor for facts: you can't cite a source, you can't unlearn a superseded clause, and it goes stale the moment a document changes. Re-tuning is not a deploy.</td>
+  </tr>
+  <tr>
+    <td><strong>Retrieval (RAG)</strong></td>
+    <td>Leave the model alone. Look up the relevant text and put it in the question.</td>
+    <td class="yes">Fresh the second the document changes, citable, deletable, auditable. This is the default and it is what Week 3 builds.</td>
+  </tr>
+</table>
+
+<div class="plain">
+<div class="label">The analogy worth keeping</div>
+<p>Fine-tuning is <strong>sending the student back to school</strong>. RAG is <strong>an open-book exam</strong>: same student, same brain, but the right page is open in front of them.</p>
+<p>And notice what that implies. In an open-book exam, the student's score depends enormously on <em>whether you handed them the right page</em>. A brilliant student with the wrong page still fails. <strong>Almost all RAG quality problems are page-finding problems, not model problems</strong> — which is why the week spends five days on retrieval and none on the model.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know</div>
+<p>You have built this system before under a different name. RAG is a <strong>lookup joined onto a request path</strong>: take an incoming key (the question), hit an index, pull the matching rows, hand them to a downstream consumer.</p>
+<p>The ingest half is a plain ETL job — read source documents, transform them into rows, load them into a table. The query half is a <code>SELECT ... ORDER BY ... LIMIT k</code>. The <em>only</em> genuinely new part is that the <code>WHERE</code> clause matches on <strong>meaning</strong> rather than equality.</p>
+<p style="margin-bottom:0;"><strong>Where the analogy breaks:</strong> a SQL join either matches or it doesn't. This lookup <em>always</em> returns its k rows — there is no such thing as "no match". Ask about something you have no document for and you still get the five least-irrelevant chunks, and the model will dutifully answer from them. <strong>A retrieval system has no natural way to say "nothing here"</strong>, and building that signal back in is real work (Day 4, refusal correctness).</p>
+</div>
+
+<h2>2. The Trick Is Just the Prompt</h2>
+
+<p>People assume there is more machinery than there is. There isn't. Here is a RAG prompt — literally the string sent to the model:</p>
+
+<div class="code-inline">You are a policy assistant. Answer ONLY from the context below.
+If the context does not contain the answer, say you don't know.
+
+CONTEXT
+-------
+[chunk 47, form ICC19-ADB, §4.2, effective 2019-03-01]
+This rider does not pay if death results from suicide within
+two years of issue.
+
+[chunk 48, form ICC19-ADB, §4.2, effective 2019-03-01]
+In Colorado the suicide exclusion period is one year.
+
+QUESTION
+--------
+Does the suicide exclusion apply in Colorado?</div>
+
+<p>The model never "queried a database". It received a longer question. Every piece of engineering in this week exists to decide <strong>which chunks go in that CONTEXT block</strong>.</p>
+
+<div class="verdict">
+<div class="label">Say this in an interview and you'll sound like you've built one</div>
+"RAG is a prompt-construction problem wearing a search costume." The model call is the easy, solved, commodity part. The hard parts are: cutting documents into retrievable units, matching a question to them, ordering the results, and proving any of it works.
+</div>
+
+<h2>3. Then Why Not Paste In Everything?</h2>
+
+<p>Reasonable question, and the answer is three separate walls.</p>
+
+<table class="matrix-table">
+  <tr><th>Wall</th><th>The number</th><th>What it means</th></tr>
+  <tr>
+    <td><strong>It doesn't fit</strong></td>
+    <td>Retail corpus <strong>3.2 billion tokens</strong>; a large context window today is a few hundred thousand.</td>
+    <td>Off by roughly four orders of magnitude. Not a tuning problem.</td>
+  </tr>
+  <tr>
+    <td><strong>You pay per token, every time</strong></td>
+    <td>At <code>$0.25</code> per million input tokens, sending 3.2B tokens is <strong>$800 — for one question.</strong></td>
+    <td>Prompt cost scales with <em>traffic</em>, not corpus size. A million questions a month makes any padding catastrophic.</td>
+  </tr>
+  <tr>
+    <td><strong>Quality actually falls</strong></td>
+    <td>Accuracy degrades as context grows, worst for facts buried in the middle.</td>
+    <td>Even with an infinite free context window you would still retrieve. <strong>Less, but correct, beats more.</strong></td>
+  </tr>
+</table>
+
+<div class="plain">
+<div class="label">In plain words</div>
+<p>You cannot hand the student the whole library. You must hand them <strong>three pages</strong>, and they had better be the right three. That constraint — <em>pick a handful of passages out of millions, in under a second</em> — is the entire discipline.</p>
+</div>
+
+<h2>4. Two Ways to Find the Right Page</h2>
+
+<p>There are exactly two families of search, and a production system uses both. You met the machinery in Weeks 1–2; here is what each one <em>is</em>, in one sentence.</p>
+
+<dl class="glossary">
+  <dt>lexical search (keyword)</dt>
+  <dd><strong>Plain:</strong> matching on the actual words. Ctrl-F with statistics bolted on — rare words count for more than common ones.<br>
+  <strong>In your terms:</strong> an inverted index. A word → list-of-document-ids map, the same structure behind a full-text index in Postgres. Exact, explainable, and it scores <strong>zero</strong> if the user's words don't appear in the text.</dd>
+
+  <dt>semantic search (dense / vector)</dt>
+  <dd><strong>Plain:</strong> matching on meaning. Convert every chunk into a list of numbers positioned so that things that <em>mean</em> similar things sit close together, then find the closest ones to the question.<br>
+  <strong>In your terms:</strong> a nearest-neighbour lookup in a feature space — the same idea as a customer-similarity model, except the features come from a language model instead of your hand-built aggregates.</dd>
+
+  <dt>embedding</dt>
+  <dd><strong>Plain:</strong> the list of numbers. Text goes in, ~1,536 numbers come out, and that point in space <em>is</em> the meaning as far as the system is concerned.<br>
+  <strong>In your terms:</strong> a deterministic UDF, <code>text → float[1536]</code>. Same input, same output, so it caches and it hashes.</dd>
+
+  <dt>chunk</dt>
+  <dd><strong>Plain:</strong> one piece of a document — a paragraph or so. The unit that gets embedded, stored, searched, and pasted into the prompt.<br>
+  <strong>In your terms:</strong> the grain of the fact table. And exactly like grain, <strong>it is chosen once at ingest and painful to change</strong>. That's Day 1.</dd>
+</dl>
+
+<div class="anchor">
+<div class="label">Why you need both, in one line</div>
+<p>Lexical search cannot find <em>"self-inflicted death"</em> in a document that says <em>"suicide"</em> — zero shared words, score zero.</p>
+<p style="margin-bottom:0;">Semantic search cannot reliably find <em>SKU-88213</em>, because it lands right next to <em>SKU-88214</em> in meaning-space — and returns it at rank 1 with a high score. <strong>Each covers precisely the other's blind spot</strong>, which is why Day 2 is about running both.</p>
+</div>
+
+<h2>5. The Whole Pipeline, in One Picture</h2>
+
+<p>RAG has two halves that run at completely different times. Confusing them is the single most common source of muddle, so the diagram separates them: the top half runs <strong>once per document</strong>, the bottom half runs <strong>once per question</strong>.</p>
+
+<svg viewBox="0 0 760 400" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs>
+    <marker id="p0" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker>
+  </defs>
+
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE TWO HALVES OF RAG — AND WHERE EACH DAY OF THIS WEEK LIVES</text>
+
+  <!-- INGEST -->
+  <rect x="18" y="42" width="724" height="120" rx="8" fill="#fff" stroke="#c9d6e2" stroke-dasharray="4,3"/>
+  <text x="32" y="62" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#1f5f8b">INGEST &#8212; runs once per document, offline, nobody is waiting</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <rect x="32" y="76" width="112" height="40" rx="5" fill="#f4f2ee" stroke="#c9d6e2"/>
+    <text x="88" y="94" text-anchor="middle" fill="#333" font-weight="700">documents</text>
+    <text x="88" y="108" text-anchor="middle" fill="#777">PDFs, forms, specs</text>
+
+    <line x1="146" y1="96" x2="176" y2="96" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="180" y="76" width="112" height="40" rx="5" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="236" y="94" text-anchor="middle" fill="#1f5f8b" font-weight="700">chunk</text>
+    <text x="236" y="108" text-anchor="middle" fill="#555">cut into pieces</text>
+    <text x="236" y="134" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="9.5">DAY 1</text>
+
+    <line x1="294" y1="96" x2="324" y2="96" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="328" y="76" width="112" height="40" rx="5" fill="#f4f2ee" stroke="#c9d6e2"/>
+    <text x="384" y="94" text-anchor="middle" fill="#333" font-weight="700">embed</text>
+    <text x="384" y="108" text-anchor="middle" fill="#777">text &#8594; numbers</text>
+    <text x="384" y="134" text-anchor="middle" fill="#777" font-size="9.5">WEEK 1</text>
+
+    <line x1="442" y1="96" x2="472" y2="96" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="476" y="76" width="132" height="40" rx="5" fill="#f4f2ee" stroke="#c9d6e2"/>
+    <text x="542" y="94" text-anchor="middle" fill="#333" font-weight="700">store</text>
+    <text x="542" y="108" text-anchor="middle" fill="#777">pgvector + tsvector</text>
+    <text x="542" y="134" text-anchor="middle" fill="#777" font-size="9.5">WEEK 2</text>
+
+    <rect x="622" y="76" width="104" height="40" rx="5" fill="#fff" stroke="#e2ded8"/>
+    <text x="674" y="94" text-anchor="middle" fill="#777" font-weight="700">+ metadata</text>
+    <text x="674" y="108" text-anchor="middle" fill="#777">version, date, §</text>
+  </g>
+
+  <!-- QUERY -->
+  <rect x="18" y="180" width="724" height="150" rx="8" fill="#fff" stroke="#cfe3d4" stroke-dasharray="4,3"/>
+  <text x="32" y="200" font-family="-apple-system,sans-serif" font-size="11" font-weight="700" fill="#2e6b3e">QUERY &#8212; runs once per question, online, a user is waiting</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10">
+    <rect x="32" y="214" width="96" height="40" rx="5" fill="#f4f2ee" stroke="#c9d6e2"/>
+    <text x="80" y="232" text-anchor="middle" fill="#333" font-weight="700">question</text>
+    <text x="80" y="246" text-anchor="middle" fill="#777">from a human</text>
+
+    <line x1="130" y1="234" x2="158" y2="234" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="162" y="214" width="118" height="40" rx="5" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="221" y="232" text-anchor="middle" fill="#1f5f8b" font-weight="700">search</text>
+    <text x="221" y="246" text-anchor="middle" fill="#555">keyword + meaning</text>
+    <text x="221" y="272" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="9.5">DAY 2</text>
+    <text x="221" y="285" text-anchor="middle" fill="#777" font-size="9">returns ~100</text>
+
+    <line x1="282" y1="234" x2="310" y2="234" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="314" y="214" width="112" height="40" rx="5" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="370" y="232" text-anchor="middle" fill="#1f5f8b" font-weight="700">rerank</text>
+    <text x="370" y="246" text-anchor="middle" fill="#555">100 &#8594; best 5</text>
+    <text x="370" y="272" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="9.5">DAY 3</text>
+
+    <line x1="428" y1="234" x2="456" y2="234" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="460" y="214" width="112" height="40" rx="5" fill="#f4f2ee" stroke="#c9d6e2"/>
+    <text x="516" y="232" text-anchor="middle" fill="#333" font-weight="700">build prompt</text>
+    <text x="516" y="246" text-anchor="middle" fill="#777">paste + instruct</text>
+
+    <line x1="574" y1="234" x2="602" y2="234" stroke="#8a8578" stroke-width="1.5" marker-end="url(#p0)"/>
+
+    <rect x="606" y="214" width="120" height="40" rx="5" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="666" y="232" text-anchor="middle" fill="#2e6b3e" font-weight="700">answer</text>
+    <text x="666" y="246" text-anchor="middle" fill="#555">+ citations</text>
+  </g>
+
+  <circle cx="80" cy="234" r="5" fill="#c8602a" opacity="0.85">
+    <animateMotion dur="4s" repeatCount="indefinite"
+      path="M0,0 L82,0 L202,0 L350,0 L436,0 L586,0"/>
+  </circle>
+
+  <text x="32" y="308" font-family="-apple-system,sans-serif" font-size="10" fill="#777">Everything left of &#8220;answer&#8221; happens in about 200&#8211;800&#160;ms. The model call is the only part most people picture.</text>
+
+  <line x1="18" y1="348" x2="742" y2="348" stroke="#e2ded8"/>
+  <text x="24" y="368" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333"><tspan font-weight="700">DAY 4</tspan> asks: is any of this actually working? (it measures the whole line)</text>
+  <text x="24" y="386" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333"><tspan font-weight="700">DAY 5</tspan> asks: how does it fail while every dashboard stays green? &#8212; <tspan font-weight="700">DAY 6&#8211;7</tspan> writes the decision document.</text>
+</svg>
+
+<div class="verdict">
+<div class="label">The orientation to hold onto all week</div>
+<strong>Ingest decisions are expensive to change; query decisions are cheap.</strong> You can swap a reranker on Tuesday afternoon. Changing the chunk size means re-embedding the whole corpus. That asymmetry is why Day 1 comes first and why it gets the most careful arithmetic — it is the decision with the least room to be wrong.
+</div>
+
+<h2>6. One Tiny Example, Traced Entirely By Hand</h2>
+
+<p>Everything above is abstract until you run one query through it with numbers small enough to check. Here is the corpus we will keep coming back to all week — five short chunks from a life-insurance policy. Real systems have millions; the mechanics are identical.</p>
+
+<div class="corpus">
+<div class="chead">The running example — five chunks, one policy</div>
+<table>
+  <tr><td class="id">D1</td><td>The Accidental Death Benefit Rider pays an additional benefit equal to the face amount.</td></tr>
+  <tr><td class="id">D2</td><td>This rider does not pay if death results from suicide within two years of issue.</td></tr>
+  <tr><td class="id">D3</td><td>In Colorado the suicide exclusion period is one year.</td></tr>
+  <tr><td class="id">D4</td><td>The Waiver of Premium Rider waives premiums after six months of total disability.</td></tr>
+  <tr><td class="id">D5</td><td>Premiums are payable monthly, quarterly, or annually as elected on the application.</td></tr>
+</table>
+</div>
+
+<h3>Step 1 — the question</h3>
+
+<div class="code-inline">Q: "does the suicide exclusion apply in Colorado?"</div>
+
+<h3>Step 2 — keyword search, scored by hand</h3>
+
+<p>Count how many of the question's meaningful words appear in each chunk. (Real scoring weights rare words higher — that's Day 2 — but counting is enough to see the shape.)</p>
+
+<table class="matrix-table">
+  <tr><th>Chunk</th><th>Matches on <code>suicide</code>, <code>exclusion</code>, <code>colorado</code>, <code>apply</code></th><th>Score</th></tr>
+  <tr><td><strong>D3</strong></td><td><code>suicide</code> &#183; <code>exclusion</code> &#183; <code>colorado</code></td><td class="yes">3</td></tr>
+  <tr><td><strong>D2</strong></td><td><code>suicide</code></td><td class="partial">1</td></tr>
+  <tr><td>D1</td><td>—</td><td class="no">0</td></tr>
+  <tr><td>D4</td><td>—</td><td class="no">0</td></tr>
+  <tr><td>D5</td><td>—</td><td class="no">0</td></tr>
+</table>
+
+<p>Ranking: <strong>D3, D2</strong>, then a three-way tie at zero. Note what already happened — <strong>three of five chunks scored exactly zero, and the system has no way to prefer one zero over another.</strong> That's not a bug; it's what keyword search <em>is</em>.</p>
+
+<h3>Step 3 — semantic search, on the same question</h3>
+
+<p>Now imagine each chunk placed as a dot in meaning-space. Chunks about the same topic land near each other, and the question lands near the chunks that answer it.</p>
+
+<svg viewBox="0 0 760 300" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE SAME FIVE CHUNKS, PLACED BY MEANING</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">A 1,536-number embedding squashed to two dimensions so it fits on a page. Distance = dissimilarity.</text>
+
+  <line x1="60" y1="255" x2="700" y2="255" stroke="#e2ded8"/>
+  <line x1="60" y1="65" x2="60" y2="255" stroke="#e2ded8"/>
+
+  <!-- exclusions cluster -->
+  <circle cx="200" cy="120" r="7" fill="#a8451f"/>
+  <text x="214" y="118" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#a8451f">D2</text>
+  <text x="214" y="132" font-family="-apple-system,sans-serif" font-size="9.5" fill="#777">suicide exclusion, 2 years</text>
+
+  <circle cx="248" cy="160" r="7" fill="#a8451f"/>
+  <text x="262" y="158" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#a8451f">D3</text>
+  <text x="262" y="172" font-family="-apple-system,sans-serif" font-size="9.5" fill="#777">Colorado carve-out, 1 year</text>
+
+  <!-- the query -->
+  <circle cx="222" cy="142" r="9" fill="none" stroke="#1f5f8b" stroke-width="2.5"/>
+  <circle cx="222" cy="142" r="14" fill="none" stroke="#1f5f8b" stroke-width="1" opacity="0.5">
+    <animate attributeName="r" from="10" to="26" dur="2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" from="0.55" to="0" dur="2s" repeatCount="indefinite"/></circle>
+  <text x="120" y="146" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#1f5f8b">QUESTION</text>
+
+  <!-- benefits cluster -->
+  <circle cx="470" cy="105" r="7" fill="#6b7f95"/>
+  <text x="484" y="103" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#555">D1</text>
+  <text x="484" y="117" font-family="-apple-system,sans-serif" font-size="9.5" fill="#777">ADB rider pays face amount</text>
+
+  <circle cx="520" cy="150" r="7" fill="#6b7f95"/>
+  <text x="534" y="148" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#555">D4</text>
+  <text x="534" y="162" font-family="-apple-system,sans-serif" font-size="9.5" fill="#777">waiver of premium rider</text>
+
+  <!-- admin -->
+  <circle cx="600" cy="215" r="7" fill="#6b7f95"/>
+  <text x="614" y="213" font-family="-apple-system,sans-serif" font-size="10.5" font-weight="700" fill="#555">D5</text>
+  <text x="614" y="227" font-family="-apple-system,sans-serif" font-size="9.5" fill="#777">premium payment modes</text>
+
+  <line x1="222" y1="142" x2="248" y2="160" stroke="#2e6b3e" stroke-width="2"/>
+  <line x1="222" y1="142" x2="200" y2="120" stroke="#2e6b3e" stroke-width="2"/>
+  <line x1="222" y1="142" x2="470" y2="105" stroke="#c9c4bb" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <text x="24" y="284" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Nearest two: <tspan font-weight="700" fill="#2e6b3e">D3 then D2</tspan> &#8212; same answer as keyword search here, but arrived at without sharing a single word being required.</text>
+</svg>
+
+<h3>Step 4 — take the top 2 and build the prompt</h3>
+
+<div class="code-inline">Answer only from the context. Cite the chunk id.
+
+CONTEXT
+[D3] In Colorado the suicide exclusion period is one year.
+[D2] This rider does not pay if death results from suicide
+     within two years of issue.
+
+QUESTION
+does the suicide exclusion apply in Colorado?</div>
+
+<h3>Step 5 — the answer</h3>
+
+<div class="verdict">
+<div class="label">Output</div>
+"Yes. The rider excludes death by suicide, and in Colorado the exclusion period is <strong>one year</strong> rather than the standard two years. [D2][D3]"
+<p style="margin-top:0.7rem;margin-bottom:0;">That is a complete RAG system. Five chunks, a scoring rule, a top-2 cut, a pasted prompt. Everything else this week is <em>the same five steps at four million chunks with someone's money on the line.</em></p>
+</div>
+
+<div class="trythis">
+<div class="label">Try this — break it in two ways</div>
+<strong>(1)</strong> Ask <em>"how long before self-inflicted death is covered?"</em> and re-run Step 2 by hand. Count the word matches: <code>self-inflicted</code>, <code>death</code>, <code>covered</code> against D2 and D3. Keyword search scores D3 at <strong>zero</strong> — the word "suicide" never appears in the question. Semantic search still finds it. <em>That's Day 2.</em><br><br>
+<strong>(2)</strong> Now delete D3 from the corpus and re-run. The system happily returns D2 and answers "two years" — <strong>confidently, with a citation, and wrong for a Colorado policy.</strong> Nothing in the pipeline noticed. <em>That's Days 4 and 5.</em>
+</div>
+
+<h2>7. Every Word You Need, Defined Once</h2>
+
+<p>The jargon is the main barrier, and there is less of it than it looks. This is the full vocabulary for the week.</p>
+
+<dl class="glossary">
+  <dt>RAG</dt>
+  <dd>Retrieval-Augmented Generation. Find relevant text, paste it into the prompt, ask the model. Three steps.</dd>
+
+  <dt>corpus</dt>
+  <dd>All your documents, collectively. <em>Your terms:</em> the source table.</dd>
+
+  <dt>chunk</dt>
+  <dd>One retrievable piece of a document, typically 100–1,000 tokens. <em>Your terms:</em> the grain of the fact table — chosen at ingest, painful to change.</dd>
+
+  <dt>token</dt>
+  <dd>Roughly ¾ of a word. The unit models are billed and limited in. 1,000 tokens ≈ 750 words ≈ 1.5 pages.</dd>
+
+  <dt>context window</dt>
+  <dd>The maximum tokens a model can read in one call — prompt and answer together. The hard ceiling on how much you can paste.</dd>
+
+  <dt>embedding</dt>
+  <dd>A list of numbers representing a piece of text's meaning. Similar meaning → nearby numbers.</dd>
+
+  <dt>top-k</dt>
+  <dd>How many chunks you retrieve. <em>Your terms:</em> the <code>LIMIT</code> clause. Typically 3–8 after reranking.</dd>
+
+  <dt>recall@k</dt>
+  <dd>Of the questions you asked, what fraction had a correct chunk somewhere in the top k? <strong>The ceiling on everything downstream</strong> — if the right chunk isn't in the k you fetched, nothing later can save you.</dd>
+
+  <dt>precision</dt>
+  <dd>Of what you returned, what fraction was actually relevant? Reranking (Day 3) improves precision and <em>cannot</em> improve recall.</dd>
+
+  <dt>reranker</dt>
+  <dd><strong>Plain:</strong> a slower, smarter second opinion. First search grabs 100 plausible chunks fast; the reranker reads each one <em>together with</em> the question and re-sorts them, and you keep the best 5.<br>
+  <em>Your terms:</em> a cheap index scan to narrow the candidate set, then an expensive exact predicate on the survivors. Two-stage retrieval, same as any query planner.</dd>
+
+  <dt>cross-encoder</dt>
+  <dd>The usual kind of reranker: a model that reads question and chunk <em>as one input</em>, so it can spot that "Colorado" in the question matches "Colorado" in the chunk. Accurate and too slow to run over millions — hence two stages.</dd>
+
+  <dt>bi-encoder</dt>
+  <dd>The embedding model. Encodes question and chunk <em>separately</em>, so chunks can be embedded in advance. Fast, less precise. This is the trade the two-stage design exists to exploit.</dd>
+
+  <dt>BM25</dt>
+  <dd>The standard keyword-scoring formula. Rewards rare words, saturates on repetition, adjusts for document length. Day 2 derives it.</dd>
+
+  <dt>hybrid search</dt>
+  <dd>Running keyword and semantic search together and merging the two ranked lists.</dd>
+
+  <dt>RRF</dt>
+  <dd>Reciprocal Rank Fusion — the standard way to merge those two lists. Uses each result's <em>rank</em>, not its score, so you never have to make an unbounded keyword score comparable to a cosine similarity.</dd>
+
+  <dt>groundedness / faithfulness</dt>
+  <dd>Is every claim in the answer actually supported by the retrieved text? Distinct from correctness — an answer can be perfectly grounded in the <em>wrong</em> chunk. Day 5 is built on that gap.</dd>
+
+  <dt>hallucination</dt>
+  <dd>Fluent invented content. RAG reduces it; it does not eliminate it, and it introduces a new variety — faithfully quoting a superseded document.</dd>
+
+  <dt>golden set</dt>
+  <dd>Your hand-labelled question → correct-chunk pairs. The measuring instrument. Without one you have opinions.</dd>
+</dl>
+
+<h2>8. The Five Ways This Breaks — Which Is the Rest of the Week</h2>
+
+<table class="matrix-table">
+  <tr><th>#</th><th>Failure, in plain words</th><th>Where it comes from</th><th>Day</th></tr>
+  <tr>
+    <td>1</td>
+    <td>The answer got <strong>cut in half</strong> at ingest, so no single chunk contains it.</td>
+    <td>Chunk boundaries land mid-clause. No reranker or better model recovers this — the information was destroyed before the index existed.</td>
+    <td><strong>Day 1</strong></td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>The user's words <strong>don't appear</strong> in the document that answers them — or do appear, in the wrong document.</td>
+    <td>Running only one of the two search families.</td>
+    <td><strong>Day 2</strong></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>The right chunk was retrieved but <strong>ranked 14th</strong>, so it never made the prompt.</td>
+    <td>First-stage search is fast and approximate by design. Fixing the order is a second stage.</td>
+    <td><strong>Day 3</strong></td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>You <strong>can't tell</strong> whether last week's change helped or hurt.</td>
+    <td>Fifty test questions cannot resolve the size of effect you're arguing about. Most teams ship on noise.</td>
+    <td><strong>Day 4</strong></td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>The answer is <strong>correctly quoted from the wrong version</strong> of the document.</td>
+    <td>Three versions of the same clause are near-identical in meaning-space, so retrieval finds all three and the model picks one. Every quality metric says GROUNDED.</td>
+    <td><strong>Day 5</strong></td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">Notice the pattern in that list</div>
+Only #3 is what a newcomer would guess ("the search isn't good enough"). The other four are <strong>data-engineering failures</strong>: wrong grain, wrong index, no measurement, no versioning. That is the week's real thesis, and it is why fourteen years of warehouse work is an advantage here rather than something to apologise for.
+</div>
+
+<h2>9. What RAG Is Not</h2>
+
+<table class="matrix-table">
+  <tr><th>Confusion</th><th>The correction</th></tr>
+  <tr><td>"RAG is a kind of fine-tuning."</td><td>No — the model's weights are never touched. Same model, longer prompt.</td></tr>
+  <tr><td>"RAG gives the model memory."</td><td>No. Each call is independent. Conversation memory is you re-sending the history yourself.</td></tr>
+  <tr><td>"RAG stops hallucination."</td><td>It reduces it and adds a new kind — faithful quotation of a superseded or irrelevant chunk (Day 5).</td></tr>
+  <tr><td>"You need a vector database for RAG."</td><td>You need <em>a place to put vectors</em>. Week 2 concluded that for these corpus sizes that place is Postgres.</td></tr>
+  <tr><td>"Bigger context windows will make RAG obsolete."</td><td>Cost scales with traffic and accuracy falls with padding. Even free, infinite context leaves you wanting the three right pages.</td></tr>
+  <tr><td>"RAG is agents."</td><td>Different thing. RAG is a lookup; an agent is a program that decides what to do next (Week 4). Agents often <em>use</em> RAG as one tool.</td></tr>
+</table>
+
+<h2>10. The Same Pipeline, Three Domains</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail</div>
+    <p><span class="kv">3.2B tokens<br>20 QPS on the agent path</span></p>
+    <p>Product specs, reviews, returns policy. Questions are short and answers are short — "what's the return window", "does it fit a 15-inch laptop".</p>
+    <p><strong>Binding constraint: cost.</strong> Volume is high and each answer is worth cents, so every wasted prompt token is multiplied by millions.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Life insurance</div>
+    <p><span class="kv">168M tokens<br>1 QPS</span></p>
+    <p>Policy forms, riders, underwriting guidelines, state variations. Answers are whole clauses <em>with their qualifiers</em>.</p>
+    <p><strong>Binding constraint: correctness and audit.</strong> Tiny corpus, trivial scale — and the hardest requirements in the week, because you must prove <em>which version</em> of a document informed a decision.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech</div>
+    <p><span class="kv">120M tokens (docs)<br>3 QPS</span></p>
+    <p>Dispute procedures, KYC policy, regulatory text. Plus exact identifiers everywhere — merchant strings, card BINs, case numbers.</p>
+    <p><strong>Binding constraint: exactness under a clock.</strong> Network deadlines are fixed by rule, and a near-match identifier is simply the wrong case.</p>
+  </div>
+</div>
+
+<div class="verdict">
+<div class="label">Why three domains rather than one</div>
+Because <strong>the same pipeline produces different correct answers in each.</strong> Insurance wants big overlapping chunks and would pay for an expensive reranker it turns out it can't fit; retail wants small chunks and can't afford to rerank everything. An architect who can say <em>"here's the model, and here's the input that flips the answer"</em> has something to offer. Someone who has memorised "chunk size 512, overlap 50" has a default.
+</div>
+
+<h2>11. Check Yourself Before Day 1</h2>
+
+<div class="quiz-container">
+<h3>Foundations Check</h3>
+
+<div class="quiz">
+<div class="q">1. In one sentence, what does RAG actually do?</div>
+<button data-correct="false">It retrains the model on your documents so it learns your domain.</button>
+<button data-correct="true">It searches your documents for relevant passages and pastes them into the prompt before asking the question. The model's weights are never touched — it's the same model reading a longer question.</button>
+<button data-correct="false">It gives the model a persistent memory of previous conversations.</button>
+<button data-correct="false">It replaces the model's search engine with your own private index.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. Context windows keep growing. Why not just paste the whole corpus in?</div>
+<button data-correct="false">Because the model would refuse inputs above a safety threshold.</button>
+<button data-correct="true">Three separate walls: it doesn't fit (3.2B tokens vs a few hundred thousand), you pay per token on every single query (~$800 per question at $0.25/M), and accuracy actually falls as context grows — worst for facts buried in the middle. Even free infinite context would leave you wanting the three right pages.</button>
+<button data-correct="false">Because embeddings must be computed over the whole prompt, which is slow.</button>
+<button data-correct="false">Because the corpus changes too often to keep a single prompt in sync.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. Why does a serious system run both keyword and semantic search?</div>
+<button data-correct="false">For redundancy — if one index is down the other serves traffic.</button>
+<button data-correct="true">Because each one is blind exactly where the other sees. Keyword search scores zero when the user says "self-inflicted death" and the document says "suicide" — no shared words. Semantic search confidently returns SKU-88214 when you asked for SKU-88213, because they're neighbours in meaning-space. Neither blind spot is fixable inside the other method.</button>
+<button data-correct="false">Because keyword search is cheaper, so it handles most traffic and semantic search is the fallback.</button>
+<button data-correct="false">Because rerankers require two candidate lists to compare against each other.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Which decisions in the pipeline are expensive to change later, and why does it matter?</div>
+<button data-correct="false">Query-time decisions, because they run on every request and affect latency SLAs.</button>
+<button data-correct="true">Ingest-time decisions — chunking above all. You can swap a reranker in an afternoon; changing chunk size means re-embedding the entire corpus. That asymmetry is why chunking is Day 1 and gets the most careful arithmetic: it's the decision with the least room to be wrong.</button>
+<button data-correct="false">Neither — modern pipelines are fully re-runnable, so everything is equally cheap to change.</button>
+<button data-correct="false">The choice of embedding model, because it's the only component with a vendor contract attached.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. You delete chunk D3 (the Colorado carve-out) from the five-chunk example and ask the same question. What happens?</div>
+<button data-correct="false">The system detects that no sufficiently relevant chunk exists and returns "I don't know".</button>
+<button data-correct="true">It returns D2 and answers "two years" — confidently, with a citation, and wrong for a Colorado policy. A retrieval system always returns its k rows; there is no natural "no match". Building a real refusal signal is separate work, and nothing in the default pipeline noticed anything was missing.</button>
+<button data-correct="false">Retrieval scores drop below the similarity threshold, so the query returns empty.</button>
+<button data-correct="false">The model recognises the gap from its training data and fills in the correct Colorado rule.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Four of the week's five failure modes aren't really "the search isn't good enough". What are they?</div>
+<button data-correct="false">Model-quality problems — they'd be solved by a stronger generation model.</button>
+<button data-correct="true">Data-engineering problems: wrong grain (the answer was cut in half at ingest), wrong index (only one search family), no measurement (an eval set too small to resolve the effect), and no versioning (correctly quoting a superseded document). Only the ranking failure is what a newcomer would guess.</button>
+<button data-correct="false">Infrastructure problems — index memory, replica lag, and connection limits.</button>
+<button data-correct="false">Prompt-engineering problems, solved by better instructions in the system prompt.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Anything in the glossary still fuzzy? Ask before moving on — Day 1 assumes every term on this page. It is much cheaper to ask now than to nod along for five days.</p>
+
+<div class="nav">
+<a href="../../week2/day6-7/0012-checkpoint-pgvector-justification.html">&larr; Week 2 Day 6-7: ADR-002</a>
+<a href="../day1/0013-chunking-strategies.html">Day 1: Chunking Strategies &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -37,12 +37,114 @@
   .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
   .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
   @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:44px; }
 </style>
 </head>
 <body>
 
 <h1>RAG Failure Modes — Irrelevant, Stale, and Contradictory</h1>
 <p class="subtitle">Week 3, Day 5 — the failure that passes every metric you built yesterday</p>
+
+<div class="plain">
+<div class="label">New to this? Read Day 0 first</div>
+<p>This lesson assumes the vocabulary from <a href="../day0/0013a-rag-from-zero.html">Day 0 — RAG From Zero</a>: what RAG is, chunks, embeddings, top-k, recall. Twenty minutes there saves an hour here.</p>
+</div>
+
+<div class="plain">
+<div class="label">What today is about, in plain words</div>
+<p>Somebody reports that the assistant gave a wrong answer. <strong>"Wrong" is not a diagnosis</strong> — there are about six completely different things that could have happened, and they have six different fixes. Picking the wrong one costs you a quarter.</p>
+<p>Most of today is about one of the six, because it is the one that is genuinely hard to see. Here it is:</p>
+<p><strong>Your policy document was revised in 2021 and again in 2024.</strong> All three versions of the exclusion clause are sitting in your index — you kept them, correctly, because a 2019 claim has to be adjudicated against the 2019 wording. The three versions say <em>almost the same thing in almost the same words</em>.</p>
+<p style="margin-bottom:0;">A question comes in. Search finds all three, because near-identical text is near-identical in meaning-space. The model receives three slightly contradictory clauses, is told nothing about which one is in force, and <strong>picks one.</strong> Maybe the right one. The answer is fluent, correctly quoted, and properly cited — so every quality check you built yesterday says it's fine.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know — and you know this one cold</div>
+<p>This is a <strong>slowly changing dimension</strong> problem. You have three versions of a row, no <code>effective_from</code> / <code>effective_to</code> on the join, and no <code>is_current</code> flag. The query returns all three and something downstream picks arbitrarily.</p>
+<p>You would never ship that in a warehouse. You would put validity windows on the dimension and an as-of date on the query, and you'd have done it without being asked.</p>
+<p style="margin-bottom:0;"><strong>Where it breaks — the reason this is worth a whole day:</strong> in SQL, forgetting the date predicate returns three rows and somebody notices. Here it returns <em>one confident paragraph</em>. There is no duplicate-row symptom, no row count to reconcile. The bug is invisible at every layer of monitoring, and it surfaces months later in a dispute. <strong>This is a Type-2 SCD problem that has been made unobservable</strong>, and spotting that is the single most transferable thing you bring to a GenAI team.</p>
+</div>
+
+<dl class="glossary">
+  <dt>irrelevant retrieval</dt>
+  <dd><strong>Plain:</strong> we fetched the wrong chunks. The correct one exists but wasn't found or wasn't ranked high enough. Days 1–3.</dd>
+
+  <dt>stale retrieval</dt>
+  <dd><strong>Plain:</strong> two different things wearing one name. <em>(a) Index staleness</em> — the document changed and the index hasn't caught up yet, a pipeline lag problem. <em>(b) Corpus staleness</em> — the index is perfectly up to date and contains an old version <em>on purpose</em>, because you're required to keep it. Only (b) is today's problem, and only (b) is unfixable by running the pipeline more often.</dd>
+
+  <dt>conflicting sources</dt>
+  <dd><strong>Plain:</strong> the retrieved chunks disagree with each other, usually because they are different versions of the same clause.</dd>
+
+  <dt>grounded</dt>
+  <dd><strong>Plain:</strong> every claim in the answer traces to a retrieved chunk. Note what it does <em>not</em> mean: correct, current, or applicable. <strong>An answer quoting a superseded clause word-perfect is fully grounded.</strong> That gap is the whole lesson.</dd>
+
+  <dt>as-of date</dt>
+  <dd><strong>Plain:</strong> the date the question should be answered <em>as of</em>. For a 2023 claim that is 2023, not today. <em>Your terms:</em> the effective-date predicate on a bitemporal join — and hardcoding <code>today()</code> is the classic bug.</dd>
+
+  <dt>detection control vs prevention control</dt>
+  <dd><strong>Plain:</strong> a <em>prevention</em> control makes the bad thing impossible — filter superseded versions out before search ever sees them. A <em>detection</em> control notices afterwards and tries to compensate — telling the model "prefer the newest version". <strong>Detection can only choose among what was retrieved</strong>, so if the current version wasn't retrieved at all it has nothing to work with. Audit committees ask which one you have.</dd>
+</dl>
+
+<h2>0. Start Here — Watch It Happen on the Running Example</h2>
+
+<p>Same policy, three versions of one clause, all legitimately in the index:</p>
+
+<div class="corpus">
+<div class="chead">One clause, three versions — all three must be retained</div>
+<table>
+  <tr><td class="id">D2·v1</td><td>This rider does not pay if death results from suicide within <strong>two years</strong> of issue. <em>&nbsp;— effective 2019-03-01 to 2021-06-30</em></td></tr>
+  <tr><td class="id">D2·v2</td><td>This rider does not pay if death results from suicide within <strong>two years</strong> of issue or reinstatement. <em>&nbsp;— effective 2021-07-01 to 2024-02-29</em></td></tr>
+  <tr><td class="id">D2·v3</td><td>This rider does not pay if death results from suicide within <strong>one year</strong> of issue or reinstatement. <em>&nbsp;— effective 2024-03-01 to open</em></td></tr>
+</table>
+</div>
+
+<div class="code-inline">Q: "is a suicide claim payable 18 months after the policy was issued?"
+   (the policy in question was issued in 2020)</div>
+
+<p>The correct answer is <strong>no</strong> — the 2020 policy is governed by v1, and 18 months is inside the two-year exclusion.</p>
+
+<h3>What the pipeline does</h3>
+
+<table class="matrix-table">
+  <tr><th>Stage</th><th>What happens</th><th>Anything look wrong?</th></tr>
+  <tr><td><strong>Search</strong></td><td>All three versions score almost identically — they differ by a handful of words, so they are essentially the same point in meaning-space.</td><td class="no">No. This is search working exactly as designed.</td></tr>
+  <tr><td><strong>Rerank</strong></td><td>The cross-encoder scores each candidate <em>against the question</em>, independently. All three answer the question about equally well, so it promotes <strong>all three</strong> into the top 5.</td><td class="no">No — and note it made things <em>worse</em>. See the caution below.</td></tr>
+  <tr><td><strong>Prompt</strong></td><td>Three near-identical clauses arrive with no indication of which is in force. Two say two years, one says one year.</td><td class="partial">A human would ask. The model won't.</td></tr>
+  <tr><td><strong>Answer</strong></td><td>"No — the exclusion period is two years, so a claim at 18 months is not payable. [D2]" &nbsp;<em>or</em>&nbsp; "Yes — the exclusion period is one year. [D2]"</td><td class="no">Both are fluent, cited, and grounded.</td></tr>
+  <tr><td><strong>Groundedness check</strong></td><td><strong>PASS.</strong> The claim genuinely is supported, word for word, by a real retrieved chunk.</td><td class="no">The check is working correctly. It is answering a different question than the one you care about.</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">The counter-intuitive part: your Day 3 reranker <em>caused</em> this</div>
+Before the reranker, versions competed against the whole corpus and usually only one made the cut. A cross-encoder scores every candidate against the query <strong>independently</strong> — it has no view of the result set as a whole — and since all three versions genuinely answer the question, it promotes all three.
+<p style="margin-top:0.7rem;margin-bottom:0;">Measured in §5: retail goes from <strong>0.1% to 97.5%</strong> of affected queries carrying multiple versions. Day 3's precision win and this failure are the same mechanism seen from two sides. Which produces a hard sequencing rule: <strong>the effective-date filter must ship before the reranker, not after</strong> — otherwise you manufacture a failure mode that did not previously exist.</p>
+</div>
+
+<div class="trythis">
+<div class="label">Try this — the fix, and why the obvious version isn't one</div>
+The tempting fix is a line in the prompt: <em>"if sources conflict, prefer the most recent."</em> Trace it against the case above. The policy was issued in <strong>2020</strong>, so the correct source is v1 — <strong>the oldest one.</strong> "Prefer the most recent" gives you v3 and confidently the wrong answer, faster.
+<p style="margin-top:0.7rem;margin-bottom:0;">The real fix is a <code>WHERE</code> clause you already know how to write: <code>effective_from &lt;= :as_of AND effective_to &gt; :as_of</code>, with <code>:as_of</code> being the <em>policy issue date</em> — not <code>today()</code>. Filter before search, and there is only one version to retrieve. Prevention, not detection.</p>
+</div>
 
 <p>Day 4 built the measurement apparatus. Today is what it catches, what it misses, and how to tell failures apart — because the symptom "the answer was wrong" has at least six distinct causes with six different fixes.</p>
 

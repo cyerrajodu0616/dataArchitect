@@ -41,12 +41,196 @@
   .dtag.retail { background:#e8f0fe; color:#1967d2; }
   .dtag.ins    { background:#f0eaf8; color:#6b3fa0; }
   .dtag.fin    { background:#e5f4f1; color:#0f7b6c; }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:44px; }
 </style>
 </head>
 <body>
 
 <h1>Dense vs Sparse vs Hybrid — What Each Family Actually Computes</h1>
-<p class="subtitle">Week 3, Day 2 — BM25 derived, where each arm fails, and the IDF Postgres doesn't give you</p>
+<p class="subtitle">Week 3, Day 2 — the two ways to search, scored by hand, then BM25 derived</p>
+
+<div class="plain">
+<div class="label">New to this? Read Day 0 first</div>
+<p>This lesson assumes the vocabulary from <a href="../day0/0013a-rag-from-zero.html">Day 0 — RAG From Zero</a>: what RAG is, chunks, embeddings, top-k, recall. Twenty minutes there saves an hour here.</p>
+</div>
+
+<div class="plain">
+<div class="label">What today is about, in plain words</div>
+<p>Yesterday you cut the documents into pieces. Today: given a question, <strong>how do you find the right pieces?</strong></p>
+<p>There are only two answers, and they are genuinely different ideas — not two implementations of one idea.</p>
+<p><strong>Match the words.</strong> The question says "Colorado", so find pieces containing "Colorado". This is what search engines did for thirty years, and it still works better than people expect. The jargon for it is <em>sparse</em> or <em>lexical</em> retrieval; the standard formula is <em>BM25</em>.</p>
+<p><strong>Match the meaning.</strong> Turn the question into a point in space, turn every chunk into a point in space, and take the nearest ones. The words need not match at all — "self-inflicted death" can find a chunk that only ever says "suicide". Jargon: <em>dense</em>, <em>vector</em>, or <em>semantic</em> retrieval.</p>
+<p style="margin-bottom:0;">Each one is blind in exactly the place the other sees. Running both and merging the results is called <strong>hybrid search</strong>, and that's most of today.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know</div>
+<p>You have used both of these, under other names.</p>
+<p><strong>Sparse is an inverted index</strong> — a term → posting-list map, exactly what a Postgres GIN index on a <code>tsvector</code> is. Look up a word, get the row ids. Exact, fast, explainable, and it has no opinion whatsoever about words it wasn't given.</p>
+<p><strong>Dense is nearest-neighbour lookup in a feature space</strong> — the same shape as finding similar customers from a behaviour vector. Except the features come out of a language model instead of your aggregates, so nobody, including the model's authors, can tell you what dimension 412 means.</p>
+<p style="margin-bottom:0;"><strong>Where the analogy breaks, and it matters:</strong> your inverted index returns <em>nothing</em> when nothing matches, which is honest and actionable. A nearest-neighbour lookup <em>always</em> returns k rows. Ask for a product that doesn't exist and you get the ten nearest ones with respectable-looking similarity scores. <strong>"No results" is a feature that dense retrieval does not have</strong>, and getting it back is real work.</p>
+</div>
+
+<dl class="glossary">
+  <dt>sparse / lexical retrieval</dt>
+  <dd><strong>Plain:</strong> word matching with statistics. "Sparse" because the vector has one slot per word in the language and nearly all of them are zero for any given chunk.</dd>
+
+  <dt>dense retrieval</dt>
+  <dd><strong>Plain:</strong> meaning matching. "Dense" because the vector is ~1,536 numbers and every one of them is non-zero and meaningless on its own.</dd>
+
+  <dt>TF — term frequency</dt>
+  <dd><strong>Plain:</strong> how many times the word appears in this chunk. More is better, but with rapidly diminishing returns — saying "refund" fifty times doesn't make a chunk fifty times more about refunds.</dd>
+
+  <dt>IDF — inverse document frequency</dt>
+  <dd><strong>Plain:</strong> how rare the word is across the whole corpus. <em>"Colorado" is worth much more than "the".</em> A word appearing in every chunk tells you nothing about which chunk to pick, so it should count for almost nothing.<br>
+  <strong>In your terms:</strong> cardinality. You already know a low-cardinality predicate barely narrows anything and a high-cardinality one narrows it to almost one row. IDF is that instinct written as a formula — and it's the piece Postgres full-text search leaves out (§4).</dd>
+
+  <dt>BM25</dt>
+  <dd><strong>Plain:</strong> the standard word-matching score. Three ideas bolted together: rare words count more (IDF), repetition saturates (TF), and long chunks get penalised so they can't win by being long.</dd>
+
+  <dt>vocabulary mismatch</dt>
+  <dd><strong>Plain:</strong> the answer exists in your corpus but uses different words than the question. The one thing word-matching structurally cannot solve.</dd>
+
+  <dt>hybrid search</dt>
+  <dd><strong>Plain:</strong> run both searches, get two ranked lists, merge them into one.</dd>
+
+  <dt>RRF — Reciprocal Rank Fusion</dt>
+  <dd><strong>Plain:</strong> the standard merge. Score each result by <code>1/(60 + its rank)</code> in each list and add them up. Uses <em>positions</em>, not scores, which dodges the problem that a BM25 score of 14.2 and a cosine similarity of 0.83 are not comparable numbers.</dd>
+</dl>
+
+<h2>0. Start Here — Both Searches, Scored By Hand</h2>
+
+<p>Same five chunks from Day 0. Two questions. Do the arithmetic yourself and both failure modes appear immediately.</p>
+
+<div class="corpus">
+<div class="chead">The running corpus</div>
+<table>
+  <tr><td class="id">D1</td><td>The Accidental Death Benefit Rider pays an additional benefit equal to the face amount.</td></tr>
+  <tr><td class="id">D2</td><td>This rider does not pay if death results from suicide within two years of issue.</td></tr>
+  <tr><td class="id">D3</td><td>In Colorado the suicide exclusion period is one year.</td></tr>
+  <tr><td class="id">D4</td><td>The Waiver of Premium Rider waives premiums after six months of total disability.</td></tr>
+  <tr><td class="id">D5</td><td>Premiums are payable monthly, quarterly, or annually as elected on the application.</td></tr>
+</table>
+</div>
+
+<h3>Question 1 — where word matching collapses</h3>
+
+<div class="code-inline">Q1: "how long before self-inflicted death is covered?"</div>
+
+<p>Meaningful words in the question: <code>self-inflicted</code>, <code>death</code>, <code>covered</code>. Now count matches:</p>
+
+<table class="matrix-table">
+  <tr><th>Chunk</th><th>Words matched</th><th>Word score</th><th>Is it actually the answer?</th></tr>
+  <tr><td>D1</td><td><code>death</code> (in "Accidental Death Benefit")</td><td class="partial">1</td><td class="no">No — this one is about what the rider <em>pays</em>.</td></tr>
+  <tr><td><strong>D2</strong></td><td><code>death</code></td><td class="partial">1</td><td class="yes">Yes — the two-year rule.</td></tr>
+  <tr><td><strong>D3</strong></td><td>—</td><td class="no">0</td><td class="yes">Yes — the Colorado carve-out.</td></tr>
+  <tr><td>D4</td><td>—</td><td class="no">0</td><td class="no">No.</td></tr>
+  <tr><td>D5</td><td>—</td><td class="no">0</td><td class="no">No.</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">Read the table — two things went wrong, not one</div>
+<strong>D3, one of the two correct answers, scored zero.</strong> It is tied with the chunk about premium payment modes. Word matching cannot rank it above anything, ever, because the question and the chunk share no words — the user said "self-inflicted", the document says "suicide."
+<p style="margin-top:0.7rem;margin-bottom:0;">And <strong>D1, which is wrong, tied with D2, which is right.</strong> Both matched on "death". Adding IDF doesn't fix this — IDF changes how much a matched word is <em>worth</em>, it cannot conjure a match that isn't there. <strong>Vocabulary mismatch is not a weighting problem, it is a structural one.</strong></p>
+</div>
+
+<p>Now the dense arm on the same question. "Self-inflicted death" and "suicide" sit almost on top of each other in meaning-space — that's what the embedding model was trained to do. So the nearest chunks are <strong>D2 and D3</strong>, in either order, and D1 is comfortably further away because "pays an additional benefit" is a different topic even though it shares a word.</p>
+
+<div class="verdict">
+<div class="label">Round 1 to dense</div>
+Dense retrieval found both correct chunks with <em>zero</em> word overlap on one of them. This is the entire reason dense retrieval exists, and it is why teams try dense-only first.
+</div>
+
+<h3>Question 2 — where meaning matching collapses</h3>
+
+<p>Add two more chunks that a real policy corpus would certainly contain:</p>
+
+<div class="corpus">
+<div class="chead">Two form-number chunks</div>
+<table>
+  <tr><td class="id">D6</td><td>Form ICC19-ADB-1 is the accidental death benefit rider used in all states except Colorado.</td></tr>
+  <tr><td class="id">D7</td><td>Form ICC19-ADB-2 is the Colorado variant of the accidental death benefit rider.</td></tr>
+</table>
+</div>
+
+<div class="code-inline">Q2: "ICC19-ADB-2"</div>
+
+<p>Read D6 and D7 as an embedding model would. They are the same sentence, on the same topic, in the same register, differing by <strong>one character</strong>. Their embeddings land essentially on the same point.</p>
+
+<table class="matrix-table">
+  <tr><th>Arm</th><th>What it returns</th><th>Why</th></tr>
+  <tr>
+    <td><strong>Dense</strong></td>
+    <td class="no">D6 or D7, roughly at random, both with high similarity</td>
+    <td>An embedding is a <em>smooth</em> function — near-identical inputs give near-identical outputs. A form number is not language; the model has no representation of "the digit at the end is the whole meaning". It returns the wrong form <strong>at rank 1 with a confident score.</strong></td>
+  </tr>
+  <tr>
+    <td><strong>Sparse</strong></td>
+    <td class="yes">D7 only</td>
+    <td>The token <code>ICC19-ADB-2</code> appears in exactly one chunk. It is maximally rare, so IDF makes it enormous. This is the case word matching is <em>perfect</em> at.</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">Why this failure is more dangerous than the other one</div>
+When word matching failed on Q1, it returned <strong>nothing</strong> for D3 — a visible, honest zero. When meaning matching fails on Q2 it returns <strong>the wrong document, at rank 1, with a similarity score of maybe 0.94.</strong> Nothing in a dashboard distinguishes that from a correct answer.
+<p style="margin-top:0.7rem;margin-bottom:0;">In insurance this is the sharpest version there is: <code>E11.9</code> and <code>E11.29</code> are two ICD-10 codes that embed almost identically and mean <em>accept at standard rates</em> versus <em>decline</em>. Never let that go through a similarity search.</p>
+</div>
+
+<h3>Now IDF, by hand, on the same five chunks</h3>
+
+<p>Question: <code>"rider suicide colorado"</code>. Count how many of the five chunks contain each word, then apply <code>IDF = ln(1 + (N − n + 0.5)/(n + 0.5))</code> with <code>N = 5</code>:</p>
+
+<table class="matrix-table">
+  <tr><th>Term</th><th>Appears in</th><th>n</th><th>IDF</th><th>Reading</th></tr>
+  <tr><td><code>rider</code></td><td>D1, D2, D4</td><td>3</td><td>0.54</td><td>Common here — barely narrows anything.</td></tr>
+  <tr><td><code>suicide</code></td><td>D2, D3</td><td>2</td><td>0.88</td><td>Getting useful.</td></tr>
+  <tr><td><code>colorado</code></td><td>D3</td><td>1</td><td class="yes">1.39</td><td>Points at exactly one chunk. <strong>2.6× the weight of "rider".</strong></td></tr>
+</table>
+
+<p>Score each chunk by adding the IDF of every query word it contains:</p>
+
+<table class="matrix-table">
+  <tr><th>Chunk</th><th>With IDF</th><th>Without IDF (just count the matches)</th></tr>
+  <tr><td>D1</td><td>0.54</td><td>1</td></tr>
+  <tr><td>D2</td><td>0.54 + 0.88 = 1.41</td><td class="partial">2 &nbsp;— tied</td></tr>
+  <tr><td><strong>D3</strong></td><td class="yes">0.88 + 1.39 = <strong>2.26</strong> — clear winner</td><td class="partial">2 &nbsp;— tied</td></tr>
+  <tr><td>D4</td><td>0.54</td><td>1</td></tr>
+  <tr><td>D5</td><td>0</td><td>0</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">What IDF bought, in one line</div>
+With IDF, D3 wins outright. Without it, <strong>D2 and D3 tie</strong> and which one you show the user comes down to whatever your <code>ORDER BY</code> does with ties.
+<p style="margin-top:0.7rem;margin-bottom:0;">At five chunks a tie is survivable. §4 is about what this same defect does at four million, and the answer is not "a bit worse" — it's that a decoy chunk repeating your common words outranks the one chunk containing the discriminator. <strong>Postgres full-text search has no IDF at all</strong>, which is why that section exists.</p>
+</div>
+
+<div class="trythis">
+<div class="label">Try this</div>
+Score <code>"rider suicide colorado"</code> against D6 and D7 too, with the IDF numbers above recomputed for N=7. Notice that <code>colorado</code> now appears in <strong>three</strong> chunks (D3, D6, D7) rather than one, so its IDF drops from 1.39 to about 0.56 and it stops being a discriminator. <strong>IDF is a property of the corpus, not of the word</strong> — adding documents silently changes your ranking, which is one reason a retrieval system that was tuned two years ago is not the system you are running today.
+</div>
+
+<h2>0.5. Where This Sits Relative to Week 2</h2>
 
 <p>Week 2 Day 4 built <em>production</em> hybrid search: query-class routing, weighted RRF, the evaluation traps. It assumed the two arms work and asked how to combine them. Today goes underneath that: <strong>what each arm actually computes, and therefore what it can and cannot possibly retrieve.</strong></p>
 
@@ -100,6 +284,15 @@ Sparse retrieval fails on <strong>vocabulary mismatch</strong> — the answer ex
 </div>
 
 <h2>2. BM25, Derived</h2>
+
+<div class="plain">
+<div class="label">Read the formula as three sentences before reading it as maths</div>
+<p>The symbols below look worse than the idea. BM25 says: <em>go through each word in the question, work out how much that word is worth in this chunk, and add it up.</em> "How much it's worth" is three factors multiplied:</p>
+<p><strong>1. Is the word rare?</strong> (IDF) — you computed this by hand in §0. "Colorado" scores 1.39, "rider" scores 0.54.</p>
+<p><strong>2. Does the word appear a lot in this chunk?</strong> (TF) — but with the volume knob turned down as counts rise. Going from 1 mention to 2 matters a lot; from 20 to 21, nothing. Without that, spamming a word wins.</p>
+<p><strong>3. Is this chunk suspiciously long?</strong> (length normalisation) — a long chunk matches more words by accident. Divide it back down, or the whole corpus glued into one file wins every query.</p>
+<p style="margin-bottom:0;">Everything in the formula is one of those three. <code>k₁</code> sets how fast repetition saturates; <code>b</code> sets how hard length is penalised. Those are the only two dials.</p>
+</div>
 
 <p>You cannot reason about the lexical arm's failures without knowing what it optimises. BM25 is three ideas stacked:</p>
 
@@ -290,6 +483,39 @@ If fusion is silently compensating for a weak lexical arm, you will <strong>attr
 </div>
 
 <h2>5. Fusion: RRF and Its One Real Weakness</h2>
+
+<div class="plain">
+<div class="label">The problem fusion solves, and why it's harder than it looks</div>
+<p>You ran both searches. You have two ranked lists. You need one list.</p>
+<p>The obvious idea — add the scores — <strong>doesn't work</strong>, because the two numbers are not the same kind of thing. A BM25 score is unbounded: it can be 3, or 47, depending on the query and the corpus. A cosine similarity is always between −1 and 1. Adding 47 to 0.83 is arithmetic on incompatible units, and whichever arm happens to produce bigger numbers silently wins every time.</p>
+<p style="margin-bottom:0;"><strong>RRF's trick is to throw the scores away and use only the positions.</strong> First place is first place in both lists, regardless of what number produced it. Each result gets <code>1/(60 + rank)</code> from each list, and you add those.</p>
+</div>
+
+<h3>RRF on the example, computed by hand</h3>
+
+<p>Say the two arms return these for one question:</p>
+
+<div class="code-inline">DENSE   1. D3    2. D2    3. D1
+SPARSE  1. D2    2. D6    3. D7        &lt;-- D3 is absent: no shared words</div>
+
+<p>With <code>k = 60</code>, add <code>1/(60 + rank)</code> from each list a chunk appears in:</p>
+
+<table class="matrix-table">
+  <tr><th>Chunk</th><th>Dense</th><th>Sparse</th><th>RRF total</th></tr>
+  <tr><td><strong>D2</strong></td><td>rank 2 → 1/62 = 0.0161</td><td>rank 1 → 1/61 = 0.0164</td><td class="yes"><strong>0.0325</strong> — wins</td></tr>
+  <tr><td>D3</td><td>rank 1 → 1/61 = 0.0164</td><td>absent → 0</td><td>0.0164</td></tr>
+  <tr><td>D6</td><td>absent → 0</td><td>rank 2 → 1/62 = 0.0161</td><td>0.0161</td></tr>
+  <tr><td>D1</td><td>rank 3 → 1/63 = 0.0159</td><td>absent → 0</td><td>0.0159</td></tr>
+  <tr><td>D7</td><td>absent → 0</td><td>rank 3 → 1/63 = 0.0159</td><td>0.0159</td></tr>
+</table>
+
+<div class="verdict">
+<div class="label">Two things to take from those numbers</div>
+<strong>1. Being in both lists beats being first in one.</strong> D2 was second on one side and first on the other, and it beat D3 which was first outright. That's the intended behaviour — agreement across two independent methods is stronger evidence than one method's confidence.
+<p style="margin-top:0.7rem;">
+<strong>2. The absolute values are meaningless.</strong> Every score is around 0.016 and the gaps are in the fourth decimal place. RRF outputs an <em>ordering</em>, nothing more. Do not threshold on an RRF score, do not show it to a user, and do not read "0.0325" as high confidence — which is precisely the weakness the rest of this section is about.</p>
+<p style="margin-bottom:0;"><em>Why 60?</em> It flattens the difference between ranks 1, 2 and 3 (1/61 vs 1/62 vs 1/63 are nearly equal) while still decaying hard by rank 100. It came out of empirical work in 2009, nobody tunes it, and that's fine.</p>
+</div>
 
 <p>Week 2 Day 4 used weighted Reciprocal Rank Fusion. Here is why it's the default, and what it costs you.</p>
 

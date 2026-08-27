@@ -37,12 +37,164 @@
   .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
   .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
   @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:44px; }
 </style>
 </head>
 <body>
 
 <h1>RAG Evaluation — Metrics, Golden Sets, and the Statistics Nobody Runs</h1>
-<p class="subtitle">Week 3, Day 4 — measuring retrieval and generation, and knowing when your eval set can't</p>
+<p class="subtitle">Week 3, Day 4 — how to tell whether any of it is working, and when you honestly cannot</p>
+
+<div class="plain">
+<div class="label">New to this? Read Day 0 first</div>
+<p>This lesson assumes the vocabulary from <a href="../day0/0013a-rag-from-zero.html">Day 0 — RAG From Zero</a>: what RAG is, chunks, embeddings, top-k, recall. Twenty minutes there saves an hour here.</p>
+</div>
+
+<div class="plain">
+<div class="label">What today is about, in plain words</div>
+<p>You've changed the chunk size. Or added a reranker. Or reweighted the two search arms. <strong>How do you know if it helped?</strong></p>
+<p>You can't just try a few questions and see if the answers look better — you'll remember the ones that improved and forget the ones that didn't. So you build a <strong>golden set</strong>: a list of real questions, each one paired with the chunk that <em>should</em> be retrieved for it, decided by a human once and written down.</p>
+<p>Then you run the old system and the new system against that list and score both. That's evaluation. The scoring rules have intimidating names — <em>nDCG</em>, <em>MRR</em> — and all of them boil down to <em>"was the right chunk in there, and how near the top?"</em></p>
+<p style="margin-bottom:0;"><strong>Then comes the part nearly everybody skips</strong>, which is most of today: your golden set has 50 questions in it, and 50 questions <em>cannot detect an improvement as small as the one you are arguing about.</em> You will get a number. It will look like an answer. It may well have the wrong sign.</p>
+</div>
+
+<div class="anchor">
+<div class="label">Anchoring this to what you already know</div>
+<p>A golden set is a <strong>regression-test fixture with expected output</strong>. Fixed inputs, known-correct results, run on every change. You've built this for ETL jobs a hundred times.</p>
+<p><strong>Where it holds:</strong> same purpose (catch regressions), same failure mode when neglected (nobody maintains it and it silently stops representing production).</p>
+<p style="margin-bottom:0;"><strong>Where it breaks, and this is the whole lesson:</strong> your ETL fixture is <em>deterministic</em>. Row counts match or they don't; 47 = 47. Here every question is a <strong>noisy sample</strong>. Question 12 improved and question 31 got worse, and you must decide whether the average moved <em>because your change worked</em> or because you happened to pick these 50 questions. That is a statistics question, not an engineering one, and it has a specific answer that most teams never compute.</p>
+</div>
+
+<dl class="glossary">
+  <dt>golden set</dt>
+  <dd><strong>Plain:</strong> your list of (question → correct chunk) pairs, labelled by a human. The measuring instrument. Everything today depends on it, and 40–50 pairs is what most teams have.</dd>
+
+  <dt>relevance label</dt>
+  <dd><strong>Plain:</strong> a human's verdict on whether a chunk answers a question. Often graded rather than yes/no: <code>3</code> = fully answers it, <code>2</code> = useful context, <code>0</code> = irrelevant.</dd>
+
+  <dt>recall@N</dt>
+  <dd><strong>Plain:</strong> <em>"of the correct chunks that exist, how many did we fetch?"</em> Ignores order completely. The ceiling on everything downstream.</dd>
+
+  <dt>precision@k</dt>
+  <dd><strong>Plain:</strong> <em>"of the chunks we sent, how many were actually useful?"</em> The rest is padding you paid for twice.</dd>
+
+  <dt>MRR — mean reciprocal rank</dt>
+  <dd><strong>Plain:</strong> <em>"how far down was the first good hit?"</em> Rank 1 scores 1, rank 2 scores ½, rank 4 scores ¼. Right metric when there is exactly one correct answer.</dd>
+
+  <dt>nDCG@k</dt>
+  <dd><strong>Plain:</strong> <em>"how good is this ordering, giving more credit for good chunks near the top, out of the best ordering that was possible?"</em> The "n" is normalised — 1.0 means perfect ordering, so scores compare across questions of different difficulty. §0 computes one by hand.</dd>
+
+  <dt>groundedness / faithfulness</dt>
+  <dd><strong>Plain:</strong> is every claim in the generated answer actually supported by the chunks that were retrieved? Note carefully what this does <em>not</em> ask: whether the answer is <em>true</em>. Day 5 lives in that gap.</dd>
+
+  <dt>statistical significance</dt>
+  <dd><strong>Plain:</strong> the difference you measured is bigger than the wobble you'd expect from luck alone. Not a formality — with 50 questions the wobble is large.</dd>
+
+  <dt>paired test</dt>
+  <dd><strong>Plain:</strong> compare A and B <em>on the same questions</em> and look at the per-question difference, rather than comparing two averages. Cancels out "question 12 is just hard", which is most of the noise. Always do this — it's free accuracy.</dd>
+
+  <dt>bootstrap</dt>
+  <dd><strong>Plain:</strong> a way to get error bars without any formulas. Resample your 50 questions with replacement, thousands of times, and recompute the difference each time. The spread of those results <em>is</em> your uncertainty. Twenty lines of code, no statistics degree needed.</dd>
+
+  <dt>MDE — minimum detectable effect</dt>
+  <dd><strong>Plain:</strong> the smallest true improvement your eval set could reliably notice. <strong>If your MDE is 0.06 and you're arguing about 0.03, your experiment cannot answer the question</strong> — and you can compute this <em>before</em> running anything.</dd>
+</dl>
+
+<h2>0. Start Here — Every Metric, Computed By Hand</h2>
+
+<p>One question, one result list. Everything below is arithmetic you can do on paper, and the numbers match what the companion script prints.</p>
+
+<div class="code-inline">the system returned, in rank order :  [11, 4, 7, 2, 9]
+a human said these are relevant    :  [4, 9, 15]
+                        with grades:   4 -> 3.0  (fully answers it)
+                                       9 -> 2.0  (useful context)
+                                      15 -> 3.0  (fully answers it)</div>
+
+<p>Line the two up:</p>
+
+<table class="matrix-table">
+  <tr><th>Position</th><th>Chunk returned</th><th>Grade</th><th></th></tr>
+  <tr><td>1</td><td>11</td><td>0</td><td class="no">miss</td></tr>
+  <tr><td>2</td><td><strong>4</strong></td><td class="yes">3.0</td><td class="yes">hit — and it's a good one</td></tr>
+  <tr><td>3</td><td>7</td><td>0</td><td class="no">miss</td></tr>
+  <tr><td>4</td><td>2</td><td>0</td><td class="no">miss</td></tr>
+  <tr><td>5</td><td><strong>9</strong></td><td class="partial">2.0</td><td class="partial">hit</td></tr>
+  <tr><td>—</td><td><em>15 never returned</em></td><td>3.0</td><td class="no">a relevant chunk we failed to find</td></tr>
+</table>
+
+<h3>recall@5 — did we find them?</h3>
+<div class="math-box">found 2 of the 3 relevant chunks &nbsp;&#8594;&nbsp; 2/3 = <strong>0.667</strong></div>
+<p>Order is irrelevant here. Chunk 4 could have been at position 1 or position 5 — same recall. What recall tells you is that <strong>chunk 15 is gone</strong>, and no reranker gets it back.</p>
+
+<h3>precision@5 — was what we sent worth sending?</h3>
+<div class="math-box">2 of the 5 returned were relevant &nbsp;&#8594;&nbsp; 2/5 = <strong>0.400</strong></div>
+<p>Three of the five chunks in your prompt are padding. Day 1 priced that: you pay for it in index memory <em>and</em> in every prompt.</p>
+
+<h3>MRR — how far down was the first good one?</h3>
+<div class="math-box">first relevant hit was at position 2 &nbsp;&#8594;&nbsp; 1/2 = <strong>0.500</strong></div>
+
+<h3>nDCG@5 — the one that needs three steps</h3>
+
+<p>The intuition first: <strong>a relevant chunk at position 1 is worth more than the same chunk at position 5</strong>, so divide each grade by a number that grows with position. The conventional divisor is <code>log₂(position + 1)</code> — it discounts steeply at first and then gently, which matches how people read a list.</p>
+
+<p><strong>Step 1 — DCG: add up the discounted grades of what we actually returned.</strong></p>
+
+<div class="code-inline">position 2, grade 3.0  ->  3.0 / log2(3) = 3.0 / 1.585 = 1.893
+position 5, grade 2.0  ->  2.0 / log2(6) = 2.0 / 2.585 = 0.774
+                                                DCG   = 2.666</div>
+
+<p><strong>Step 2 — IDCG: what would a perfect ordering have scored?</strong> Best possible is the two grade-3 chunks first, then the grade-2 one:</p>
+
+<div class="code-inline">position 1, grade 3.0  ->  3.0 / log2(2) = 3.0 / 1.000 = 3.000
+position 2, grade 3.0  ->  3.0 / log2(3) = 3.0 / 1.585 = 1.893
+position 3, grade 2.0  ->  2.0 / log2(4) = 2.0 / 2.000 = 1.000
+                                                IDCG  = 5.893</div>
+
+<p><strong>Step 3 — divide.</strong></p>
+
+<div class="math-box">nDCG@5 = 2.666 / 5.893 = <strong>0.453</strong></div>
+
+<div class="plain">
+<div class="label">Why bother normalising</div>
+<p>Because raw DCG isn't comparable between questions. A question with four relevant chunks can score far higher than one with a single relevant chunk, purely because there's more available to earn. Dividing by the best possible score puts every question on a 0-to-1 scale, so averaging across your golden set means something.</p>
+<p style="margin-bottom:0;"><strong>0.453 reads as: we captured about 45% of the ranking quality that was available to us.</strong></p>
+</div>
+
+<div class="caution">
+<div class="label">The reason to report recall alongside nDCG, visible in these numbers</div>
+Two completely different things went wrong here, and nDCG blends them into one figure:
+<p style="margin-top:0.7rem;"><strong>A ranking failure</strong> — chunk 4 was found but put at position 2 instead of 1. Fix: a reranker (Day 3).<br>
+<strong>A retrieval failure</strong> — chunk 15 was never returned at all. Fix: better chunking, a second search arm, or a bigger N (Days 1–3). <em>A reranker does nothing for this.</em></p>
+<p style="margin-bottom:0;">nDCG@5 = 0.453 is consistent with either. recall@5 = 0.667 tells you a third of the relevant material never arrived. <strong>Report both, always</strong> — otherwise you cannot tell which of two very different fixes you need, and you will buy a reranker to solve a chunking problem.</p>
+</div>
+
+<div class="trythis">
+<div class="label">Try this</div>
+Recompute nDCG@5 with chunk 4 moved to position 1 (everything else unchanged). DCG becomes <code>3.0/log₂(2) + 2.0/log₂(6) = 3.000 + 0.774 = 3.774</code>, so nDCG rises to <code>3.774/5.893 = <strong>0.640</strong></code>. A single position of improvement on one chunk is worth <strong>+0.187</strong> — roughly <em>six times</em> the size of the whole-system effects argued about in the rest of this lesson.
+<p style="margin-top:0.7rem;margin-bottom:0;">That's the intuition for why 50 questions isn't enough. Individual queries swing by 0.2 or more; system-level changes move the <em>average</em> by 0.03. You are trying to hear a whisper in a room where every voice is shouting, and the only remedy is more voices — §6 works out how many.</p>
+</div>
+
+<h2>0.5. What Days 1–3 Left to Measure</h2>
 
 <p>Days 1–3 produced three decisions that all need measuring: <strong>chunk size and overlap</strong>, <strong>hybrid arm weighting</strong>, and <strong>reranker plus candidate N</strong>. Each was justified with arithmetic and each ends with the same sentence — <em>measure it on a golden set.</em> Today is that.</p>
 
@@ -160,6 +312,13 @@ It is the metric that separates a demo from a production system, and it needs <s
 
 <h2>5. What 50 Queries Actually Told Us</h2>
 
+<div class="plain">
+<div class="label">The experiment being run, in plain words</div>
+<p>Normally you can't check your evaluation, because if you knew the right answer you wouldn't need to evaluate. So this run uses <strong>simulated data where the truth is known by construction</strong>: system B really is better, by +0.0277, verified over 200,000 queries.</p>
+<p>Then we do what a team actually does: <strong>take 50 of those queries and look at the average.</strong></p>
+<p style="margin-bottom:0;">The question isn't "is B better" — we already know it is. The question is <strong>"would the standard procedure have told us?"</strong></p>
+</div>
+
 <p>Here is a run where <strong>we know the true answer</strong>, because the data is simulated: system B is genuinely better by <strong>+0.0277 nDCG</strong>, measured over 200,000 queries.</p>
 
 <div class="code-inline">python rag_eval_harness.py
@@ -215,6 +374,14 @@ Every class is inconclusive, and the class sample sizes are <strong>11, 22, 10 a
 </div>
 
 <h2>6. How Many Queries Do You Actually Need?</h2>
+
+<div class="plain">
+<div class="label">Reading the formula below without a statistics background</div>
+<p>It says one thing: <strong>the smallest improvement you can detect depends on how noisy your queries are and how many you have.</strong></p>
+<p><code>SD</code> is the noise — how much the per-query difference between A and B jumps around. <code>√n</code> is your sample size, under a square root because averaging cancels noise, but slowly. <code>2.80</code> is a fixed constant that encodes the usual conventions (a 5% false-positive rate and an 80% chance of spotting a real effect); you don't tune it.</p>
+<p><strong>The square root is the whole story.</strong> To detect an effect half as small you need <em>four times</em> the queries. To detect one a tenth the size, a hundred times. That is why "just add a few more test questions" doesn't rescue an underpowered eval.</p>
+<p style="margin-bottom:0;"><strong>And the reason to run it first:</strong> labelling is the expensive part, and this tells you how much labelling to budget for <em>before</em> you spend a week doing the wrong amount.</p>
+</div>
 
 <p>This calculation takes two minutes and is almost never run. It should be run <em>before</em> labelling, because labelling is the expensive part and the only part whose cost you control up front.</p>
 
