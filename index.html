@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Architect Learning Path</title>
+  <style>
+    :root { color-scheme: light; --ink:#17202a; --muted:#667085; --paper:#f6f7f9; --card:#fff; --accent:#3157a4; --line:#e4e7ec; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:var(--paper); line-height:1.5; }
+    header { padding:3.5rem 1.25rem 2.5rem; color:#fff; background:linear-gradient(135deg,#18345f,#3157a4); }
+    header div, main { width:min(100%,70rem); margin:auto; }
+    h1 { margin:0 0 .5rem; font-size:clamp(2rem,6vw,3.5rem); line-height:1.1; }
+    header p { max-width:42rem; margin:0; color:#e7ecf7; font-size:1.05rem; }
+    main { padding:2rem 1.25rem 4rem; }
+    section + section { margin-top:2.5rem; }
+    h2 { margin:0 0 1rem; font-size:1.45rem; }
+    .lessons { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr)); gap:.85rem; }
+    a { display:block; min-height:100%; padding:1rem; color:inherit; text-decoration:none; background:var(--card); border:1px solid var(--line); border-radius:.75rem; box-shadow:0 1px 2px rgb(16 24 40 / 5%); }
+    a:hover, a:focus-visible { border-color:var(--accent); box-shadow:0 4px 12px rgb(49 87 164 / 14%); transform:translateY(-1px); }
+    a:focus-visible { outline:3px solid rgb(49 87 164 / 25%); outline-offset:2px; }
+    .number { display:block; margin-bottom:.3rem; color:var(--accent); font-size:.78rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .title { font-weight:650; }
+    @media (prefers-reduced-motion:no-preference) { a { transition:border-color .15s,box-shadow .15s,transform .15s; } }
+  </style>
+</head>
+<body>
+  <header><div><h1>Data Architect Learning Path</h1><p>Embeddings, vector databases, retrieval-augmented generation, and agent architecture—from fundamentals to production decisions.</p></div></header>
+  <main>
+    <!-- LESSONS:START -->
+    <section><h2>Week 1 · Embeddings</h2><div class="lessons">
+      <a href="Claude/week1/day1/0001-what-is-an-embedding.html"><span class="number">Lesson 0001</span><span class="title">What an Embedding Actually Is</span></a>
+      <a href="Claude/week1/day2/0002-distance-metrics.html"><span class="number">Lesson 0002</span><span class="title">Distance Metrics</span></a>
+      <a href="Claude/week1/day3/0003-openai-vs-opensource-embeddings.html"><span class="number">Lesson 0003</span><span class="title">OpenAI vs Open-Source Embeddings &amp; Deep Dive Architecture</span></a>
+      <a href="Claude/week1/day4/0004-fine-tuning-embeddings.html"><span class="number">Lesson 0004</span><span class="title">Fine-Tuning Embeddings vs Off-The-Shelf</span></a>
+      <a href="Claude/week1/day5/0005-embedding-model-justification.html"><span class="number">Lesson 0005</span><span class="title">Embedding Model Justification for Personal Agent</span></a>
+      <a href="Claude/week1/day6-7/0006-checkpoint-fine-tuning-1pager.html"><span class="number">Lesson 0006</span><span class="title">Week 1 Checkpoint: Embedding Architecture 1-Pager</span></a>
+    </div></section>
+    <section><h2>Week 2 · Vector Databases</h2><div class="lessons">
+      <a href="Claude/week2/day1/0007-pgvector-fundamentals.html"><span class="number">Lesson 0007</span><span class="title">pgvector Fundamentals: IVFFlat vs HNSW</span></a>
+      <a href="Claude/week2/day2/0008-pinecone-weaviate-milvus.html"><span class="number">Lesson 0008</span><span class="title">Pinecone, Weaviate, Milvus: What Purpose-Built Vector DBs Buy You</span></a>
+      <a href="Claude/week2/day3/0009-pgvector-scale-limits.html"><span class="number">Lesson 0009</span><span class="title">Scale Tradeoffs: Where pgvector Actually Breaks</span></a>
+      <a href="Claude/week2/day4/0010-hybrid-search-production.html"><span class="number">Lesson 0010</span><span class="title">Hybrid Search in Production: Building It Inside Postgres</span></a>
+      <a href="Claude/week2/day5/0011-operational-simplicity.html"><span class="number">Lesson 0011</span><span class="title">Operational Simplicity: What &quot;It&#x27;s Just Postgres&quot; Actually Buys</span></a>
+      <a href="Claude/week2/day6-7/0012-checkpoint-pgvector-justification.html"><span class="number">Lesson 0012</span><span class="title">Week 2 Checkpoint: pgvector Justification &amp; Scale Boundary</span></a>
+    </div></section>
+    <section><h2>Week 3 · Retrieval-Augmented Generation</h2><div class="lessons">
+      <a href="Claude/week3/day0/0013a-rag-from-zero.html"><span class="number">Lesson 0013A</span><span class="title">0013a — RAG From Zero: What We Are Actually Building</span></a>
+      <a href="Claude/week3/day1/0013-chunking-strategies.html"><span class="number">Lesson 0013</span><span class="title">Chunking Strategies: The Decision Made Before Retrieval Exists</span></a>
+      <a href="Claude/week3/day2/0014-dense-sparse-hybrid.html"><span class="number">Lesson 0014</span><span class="title">Dense vs Sparse vs Hybrid: What Each Retrieval Family Actually Computes</span></a>
+      <a href="Claude/week3/day3/0015-reranking.html"><span class="number">Lesson 0015</span><span class="title">Reranking: The Ceiling, The Bill, and Where They Cross</span></a>
+      <a href="Claude/week3/day4/0016-rag-evaluation.html"><span class="number">Lesson 0016</span><span class="title">RAG Evaluation: Metrics, Golden Sets, and the Statistics Nobody Runs</span></a>
+      <a href="Claude/week3/day5/0017-failure-modes.html"><span class="number">Lesson 0017</span><span class="title">RAG Failure Modes: Irrelevant, Stale, and Contradictory</span></a>
+      <a href="Claude/week3/day6-7/0018-checkpoint-retrieval-redesign.html"><span class="number">Lesson 0018</span><span class="title">Checkpoint: Retrieval Pipeline Redesign with Eval Built In (ADR-003)</span></a>
+    </div></section>
+    <section><h2>Week 4 · Agent Architecture</h2><div class="lessons">
+      <a href="Claude/week4/day1/0019-langgraph-fundamentals.html"><span class="number">Lesson 0019</span><span class="title">LangGraph Fundamentals: Why Agents Need Loops</span></a>
+      <a href="Claude/week4/day2/0020-framework-comparison.html"><span class="number">Lesson 0020</span><span class="title">Which Framework: LangGraph vs Chains vs CrewAI vs Just Calling the API</span></a>
+      <a href="Claude/week4/day3/0021-human-in-the-loop.html"><span class="number">Lesson 0021</span><span class="title">Human in the Loop: Where the Approval Gate Goes, and Why</span></a>
+      <a href="Claude/week4/day4/0022-error-handling-retries.html"><span class="number">Lesson 0022</span><span class="title">Error Handling: Why Reliable Steps Make an Unreliable Agent</span></a>
+      <a href="Claude/week4/day5/0023-state-persistence.html"><span class="number">Lesson 0023</span><span class="title">State Persistence: Checkpoints, the Quadratic, and Why Postgres</span></a>
+      <a href="Claude/week4/day6-7/0024-checkpoint-agent-state-graph.html"><span class="number">Lesson 0024</span><span class="title">Checkpoint: The Agent State Graph, and Justifying Every Edge (ADR-004)</span></a>
+    </div></section>
+    <!-- LESSONS:END -->
+  </main>
+</body>
+</html>
