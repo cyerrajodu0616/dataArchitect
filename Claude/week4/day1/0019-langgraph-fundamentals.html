@@ -150,17 +150,24 @@ The chain <em>knew</em> it was confused — <code>confident = False</code> is ri
 
 <h3>What the graph does</h3>
 
+<p>Two separate turns happen at step 2, and it matters that you can tell them apart — the bot has to actually send its question before it can possibly receive a reply to it. Here they are kept on separate lines instead of compressed into one arrow:</p>
+
 <div class="code-inline">  step 1: classify
         intent = 'unknown'
         confident = False
         branch chose: ask_clarify          &lt;-- a choice the chain couldn't make
 
   step 2: ask_clarify
-        question_asked = 'Did you want a refund, tracking, or a cancellation?'
-        request: "hi, this isn't what I expected"
-              -> "hi, this isn't... | user said: no i just want to know
-                  where is my parcel"
-        clarify_count = 1
+        [turn 1 — the customer's original message, still sitting in the bag]
+        request        = "hi, this isn't what I expected"
+
+        [turn 2 — the retail bot's OWN first request, sent back to the customer]
+        question_asked = 'Sorry — did you want a refund, tracking, or a cancellation?'
+
+        [turn 3 — the customer's follow-up reply, appended, not overwritten]
+        request        = "hi, this isn't what I expected | user said: no i
+                           just want to know where is my parcel"
+        clarify_count  = 1
 
   step 3: classify                          &lt;-- BACK to step 1, with more in the bag
         intent: 'unknown' -> 'track'
@@ -173,11 +180,16 @@ The chain <em>knew</em> it was confused — <code>confident = False</code> is ri
   RESULT: SENT_TRACKING
   PATH  : classify -> ask_clarify -> classify -> handle_track</div>
 
+<div class="caution">
+<div class="label">In a real deployment, step 2 is actually two steps with days in between</div>
+The script answers its own clarifying question instantly so it can run end-to-end without a human sitting at a keyboard. A production agent does not get to do that: <code>ask_clarify</code> sends its question and then the run <strong>stops</strong> — there is no reply yet to put in the bag. Only once the customer actually answers does anything resume, and that resume has to find the run exactly where it left off. That pause-and-resume mechanic is its own topic (Day 3), and it only works at all because the state was saved somewhere durable (Day 5).
+</div>
+
 <div class="verdict">
 <div class="label">Read the PATH line — <code>classify</code> appears twice</div>
 That's the whole lesson. Same nodes, same logic inside each node, same model if there were one. <strong>The only difference is one arrow pointing backwards.</strong>
 <p style="margin-top:0.7rem;margin-bottom:0;">Chain: <strong>APPROVED</strong> — gave a refund to someone who wanted a tracking number.<br>
-Graph: <strong>SENT_TRACKING</strong> — asked one question and got it right.</p>
+Graph: <strong>SENT_TRACKING</strong> — sent its own question first, then asked one question and got it right.</p>
 </div>
 
 <svg viewBox="0 0 760 300" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
@@ -418,7 +430,7 @@ python state_machine_trace.py --quiet               # results only</div>
 <p class="ask-agent">Want to walk through the engine line by line, sketch your own agent's graph, or work out where its exit conditions should come from? Ask in your chat session.</p>
 
 <div class="nav">
-<a href="../../week3/day6-7/0018-checkpoint-retrieval-redesign.html">&larr; Week 3 Day 6-7: ADR-003</a>
+<a href="../day0/0019a-agent-orchestration-from-zero.html">&larr; Day 0: Agent Orchestration From Zero</a>
 <a href="../day2/0020-framework-comparison.html">Day 2: Which Framework &rarr;</a>
 </div>
 

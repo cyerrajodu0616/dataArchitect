@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>0019a — Agent Orchestration From Zero: What We Are Actually Building</title>
+<link rel="stylesheet" href="../../week1/assets/lesson-style.css">
+<style>
+  .math-box { text-align:center; font-weight:bold; background:#f4f2ee; padding:1rem; border-radius:8px; margin:1rem 0; border-left:4px solid #1f5f8b; font-size:1.02rem; }
+  .matrix-table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:0.87rem; }
+  .matrix-table th { background:#1f5f8b; color:#fff; padding:10px 14px; text-align:left; }
+  .matrix-table td { padding:9px 14px; border:1px solid #e2ded8; vertical-align:top; }
+  .matrix-table tr:nth-child(even) td { background:#f9f7f4; }
+  .matrix-table .yes { color:#2e6b3e; font-weight:700; }
+  .matrix-table .no { color:#a8451f; font-weight:700; }
+  .matrix-table .partial { color:#8a6d1f; font-weight:700; }
+  details { border:1px solid #e2ded8; border-radius:8px; margin:1rem 0; }
+  details summary { padding:0.75rem 1rem; cursor:pointer; font-weight:700; background:#f4f2ee; border-radius:7px; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::before { content:"▶ "; font-size:0.75rem; color:#c8602a; }
+  details[open] summary::before { content:"▼ "; }
+  details .details-body { padding:1rem 1.2rem; }
+  .code-inline { background:#1e1e2e; color:#cdd6f4; padding:0.9rem 1.2rem; border-radius:8px; font-size:0.8rem; font-family:"Fira Code",monospace; overflow-x:auto; margin:1rem 0; white-space:pre; }
+  .verdict { background:#f0f6f1; border:1px solid #cfe3d4; border-left:4px solid #2e6b3e; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .verdict .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#2e6b3e; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .caution { background:#fdf4ef; border:1px solid #f0dbcc; border-left:4px solid #a8451f; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .caution .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#a8451f; letter-spacing:0.05em; margin-bottom:0.4rem; }
+
+  /* --- beginner-ramp components --- */
+  .plain { background:#eef4fa; border:1px solid #c9d6e2; border-left:4px solid #1f5f8b; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .plain .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#1f5f8b; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .plain p { margin-bottom:0.6rem; }
+  .plain p:last-child { margin-bottom:0; }
+  .anchor { background:#f6f2fa; border:1px solid #ddd0ea; border-left:4px solid #6b3fa0; border-radius:0 8px 8px 0; padding:1.1rem 1.4rem; margin:1.5rem 0; }
+  .anchor .label { font-size:0.85rem; font-weight:700; text-transform:uppercase; color:#6b3fa0; letter-spacing:0.05em; margin-bottom:0.4rem; }
+  .anchor p { margin-bottom:0.6rem; }
+  .anchor p:last-child { margin-bottom:0; }
+  .glossary { border:1px solid #e2ded8; border-radius:9px; padding:0.4rem 1.2rem; margin:1.4rem 0; background:#fff; }
+  .glossary dt { font-weight:700; color:#8c2a00; font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.88rem; margin-top:0.9rem; }
+  .glossary dd { margin:0.25rem 0 0.6rem 0; font-size:0.92rem; }
+  .trythis { background:#fffdf5; border:1px dashed #d8c99a; border-radius:8px; padding:0.9rem 1.2rem; margin:1.3rem 0; font-size:0.92rem; }
+  .trythis .label { font-weight:700; color:#8a6d1f; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.35rem; }
+
+  /* --- the running toy example, reused all week --- */
+  .corpus { border:1px solid #e2ded8; border-radius:9px; background:#fff; margin:1.4rem 0; overflow:hidden; }
+  .corpus .chead { background:#f4f2ee; padding:0.6rem 1rem; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#1f5f8b; border-bottom:1px solid #e2ded8; }
+  .corpus table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  .corpus td { padding:0.55rem 1rem; border-bottom:1px solid #f0ede8; vertical-align:top; }
+  .corpus tr:last-child td { border-bottom:none; }
+  .corpus td.id { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.82rem; color:#8c2a00; font-weight:700; width:70px; }
+
+  .domains { display:grid; grid-template-columns:repeat(3,1fr); gap:0.9rem; margin:1.4rem 0; }
+  .domains > div { border-radius:9px; padding:0.95rem 1.1rem; border:1px solid #e2ded8; background:#fff; font-size:0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .domains .dhead { font-size:0.76rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+  .domains .retail  { border-top:3px solid #1967d2; }
+  .domains .ins     { border-top:3px solid #6b3fa0; }
+  .domains .fin     { border-top:3px solid #0f7b6c; }
+  .domains .retail .dhead { color:#1967d2; }
+  .domains .ins .dhead    { color:#6b3fa0; }
+  .domains .fin .dhead    { color:#0f7b6c; }
+  .domains p { font-size:0.88rem; margin-bottom:0.5rem; }
+  .domains .kv { font-family:"Fira Code",SFMono-Regular,monospace; font-size:0.8rem; color:#8c2a00; }
+  @media (max-width:680px) { .domains { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Agent Orchestration From Zero — What We Are Actually Building</h1>
+<p class="subtitle">Week 4, Day 0 — read this first. Every term defined, one tiny example traced entirely by hand, and a map of where the other six days sit.</p>
+
+<div class="plain">
+<div class="label">Start here — the one-paragraph version</div>
+<p>A normal program is a recipe: step 1, step 2, step 3, in that order, every time. You wrote the order, and it never changes no matter what the data says.</p>
+<p>An <strong>agent</strong> is a program that gets to decide what to do next, based on what it finds along the way — instead of you deciding for it in advance. <strong>Agent orchestration</strong> is just the plumbing that makes that decision-making safe: where the decision points are, what happens when the agent isn't sure, who gets asked, and how you stop it from looping forever.</p>
+<p>That's the whole subject. Nothing in the next six days is more mysterious than that sentence — it's just consequences of it, worked out carefully.</p>
+</div>
+
+<h2>1. Why a Fixed Pipeline Can't Do the Job</h2>
+
+<p>You've built plenty of fixed pipelines — an Airflow DAG, an ETL job, a nightly batch: task A runs, then B, then C, always the same order, decided at design time. That works beautifully as long as the real world cooperates. An agent exists because the real world doesn't.</p>
+
+<table class="matrix-table">
+  <tr><th>Gap</th><th>Example</th><th>Why a fixed pipeline can't close it</th></tr>
+  <tr>
+    <td><strong>Ambiguous input</strong></td>
+    <td>A customer writes "hi, this isn't what I expected." Refund? Wrong item? Just venting?</td>
+    <td>The pipeline has to pick one branch <em>right now</em>, in order, and it has no way to say "hold on, let me ask."</td>
+  </tr>
+  <tr>
+    <td><strong>Work that pauses mid-run</strong></td>
+    <td>An underwriting file is missing a lab result. Someone has to fetch it — that can take days.</td>
+    <td>A DAG's dependency graph is fixed before the run starts and finishes in one pass. It has no notion of "stop here, and pick back up next Tuesday with more information than I started with."</td>
+  </tr>
+</table>
+
+<div class="caution">
+<div class="label">The failure mode that makes this urgent</div>
+A fixed pipeline that hits ambiguity does not stop and say so. It takes the only branch it has, because that's the only branch it has. <strong>It will confidently do the wrong thing rather than do nothing</strong> — and "confidently wrong" is indistinguishable from "correct" until someone downstream notices.
+<p style="margin-top:0.7rem;margin-bottom:0;">In retail that's a refund sent to someone who wanted a tracking number. In insurance it's a file that gets auto-declined for missing evidence nobody actually asked for. Same root cause both times: nowhere to express "I'm not sure."</p>
+</div>
+
+<h3>Three ways to let a program decide, and why two of them lose</h3>
+
+<table class="matrix-table">
+  <tr><th>Approach</th><th>In plain words</th><th>Verdict</th></tr>
+  <tr>
+    <td><strong>Hardcode every branch</strong></td>
+    <td>Write an <code>if/elif/else</code> for every case you can think of, in a DAG.</td>
+    <td class="no">No. The branches you didn't think of are exactly the ones that show up in production, and the tree explodes long before it covers real language.</td>
+  </tr>
+  <tr>
+    <td><strong>One big LLM call</strong></td>
+    <td>Throw the whole problem at the model in a single prompt with a tool or two attached.</td>
+    <td class="partial">Works more often than the ecosystem admits — Day 2 makes this case properly. Breaks the moment a step must pause for hours or days, or retry a bounded number of times with new information.</td>
+  </tr>
+  <tr>
+    <td><strong>A graph (state machine)</strong></td>
+    <td>Read what's known so far, decide what to do, and allow that decision to send the run <em>backward</em> to an earlier step.</td>
+    <td class="yes">Yes. This is the only shape that can express "I'm not sure — let me find out, then pick up where I left off."</td>
+  </tr>
+</table>
+
+<h2>2. The Trick Is Just a Loop With a Choice</h2>
+
+<p>People assume "agent framework" means more machinery than it does. Here is the entire mechanism, in eight lines:</p>
+
+<div class="code-inline">state = {...}                 # everything known so far
+node  = entry_point
+
+while node != END:
+    state.update(run(node, state))     # do the step, update what's known
+    if node in branches:
+        node = branches[node](state)   # LOOK AT STATE, choose what's next
+    else:
+        node = edges[node]             # or just go to the fixed next step</div>
+
+<p>That's it. A <strong>node</strong> does work and changes the state. An <strong>edge</strong> says what runs next — fixed, or chosen by looking at the state. The loop keeps going until something routes to <code>END</code>. Every "agent framework" — LangGraph included — is this loop plus bookkeeping: checkpointing the state to disk, pausing for a human, streaming progress, running independent nodes in parallel. Day 1 onward is that bookkeeping.</p>
+
+<div class="verdict">
+<div class="label">Say this in an interview and you'll sound like you've built one</div>
+"An agent is a <code>while</code> loop wearing a decision costume." The loop is the easy, solved, ten-line part. The hard parts are: what goes in the shared state, when the loop is allowed to go backward, and what guarantees it eventually stops.
+</div>
+
+<h2>3. Then Why Not Just Add More If/Else?</h2>
+
+<p>Reasonable question. The answer is three separate walls, and they show up in this order as a workflow grows.</p>
+
+<table class="matrix-table">
+  <tr><th>Wall</th><th>What happens</th><th>What it means</th></tr>
+  <tr>
+    <td><strong>The tree explodes</strong></td>
+    <td>Every new case you handle multiplies the branches downstream of it. Past a handful of decisions, nobody can draw the whole flowchart from memory, let alone review it.</td>
+    <td>Combinatorial, not linear. Adding the fifth decision point costs more than the first four combined.</td>
+  </tr>
+  <tr>
+    <td><strong>You can't express "come back later"</strong></td>
+    <td>An <code>if/else</code> runs once, in program order, and the process either keeps running or it doesn't. It has no way to suspend for three days and wake up with the same state intact.</td>
+    <td>That's not a missing feature you can code around cheaply — it needs the run's state to be durable and resumable. That's a checkpoint (Day 5).</td>
+  </tr>
+  <tr>
+    <td><strong>You can't bound a retry that spans branches</strong></td>
+    <td>A hardcoded retry lives inside one function. "Ask up to twice, across however many turns that takes, then hand off" needs a counter that survives across the whole run.</td>
+    <td>That counter has to live in the shared state, not in any one node — which is a graph concept, not an <code>if/else</code> concept.</td>
+  </tr>
+</table>
+
+<div class="plain">
+<div class="label">In plain words</div>
+<p>You don't reach for a graph because the logic is <em>complicated</em>. You reach for it because the logic needs to go <strong>backward</strong>, <strong>pause</strong>, or <strong>repeat an unknown number of times</strong> — and a fixed pipeline, no matter how many branches you bolt on, can only ever go forward, once.</p>
+</div>
+
+<h2>4. One Tiny Example, Traced Entirely by Hand</h2>
+
+<p>Everything above is abstract until you trace one request through it with a bag small enough to hold in your head. This is the example the whole week keeps coming back to — Day 1 runs the full version as code; here it's just two nodes and a table.</p>
+
+<div class="corpus">
+<div class="chead">The running example — kept all week</div>
+<table>
+  <tr><td class="id">Setting</td><td>A retail order-support agent. It has two tools it can use: look up the order, and send a decision.</td></tr>
+  <tr><td class="id">Message</td><td><code>"hi, this isn't what I expected"</code></td></tr>
+</table>
+</div>
+
+<p>Read that message again. It never says refund, tracking, or cancellation. That's not a contrived edge case — it's what most real messages look like — and it's exactly where a fixed pipeline and a graph stop being equivalent.</p>
+
+<h3>Step 1 — classify, by hand</h3>
+
+<p>The <code>classify</code> node checks the message against three short word lists. Nothing clever — just: are any of these words present?</p>
+
+<table class="matrix-table">
+  <tr><th>Checking for…</th><th>Words</th><th>Present in the message?</th></tr>
+  <tr><td>refund</td><td><code>refund</code>, <code>money back</code>, <code>return this</code></td><td class="no">no</td></tr>
+  <tr><td>tracking</td><td><code>where is</code>, <code>tracking</code>, <code>delivered yet</code></td><td class="no">no</td></tr>
+  <tr><td>cancel</td><td><code>cancel</code></td><td class="no">no</td></tr>
+</table>
+
+<p>None matched. The node puts <code>intent = "unknown"</code> and <code>confident = False</code> into the bag. Nothing has gone wrong yet — the bag correctly records that nobody knows what the customer wants. What happens next is the entire lesson.</p>
+
+<h3>Step 2a — as a fixed pipeline (one direction only)</h3>
+
+<table class="matrix-table">
+  <tr><th>Step</th><th>State after</th></tr>
+  <tr><td>classify</td><td><code>intent="unknown"</code>, <code>confident=False</code></td></tr>
+  <tr><td>decide <em>(only edge available: forward)</em></td><td class="no"><code>decision="APPROVED"</code> — guessed refund, because that was the only decision this node knows how to make</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">Look at what just happened</div>
+The bag <em>knew</em> it was unsure — <code>confident=False</code> was sitting right there — and the pipeline approved a refund anyway. Not a bug in the code. There is simply no arrow out of <code>classify</code> that means "ask a question and come back." With nowhere else to go, guessing is the only move left.
+</div>
+
+<h3>Step 2b — as a graph (one arrow allowed to point backward)</h3>
+
+<table class="matrix-table">
+  <tr><th>Step</th><th>State after</th></tr>
+  <tr><td>classify</td><td>on the original message, <code>"hi, this isn't what I expected"</code>: <code>intent="unknown"</code>, <code>confident=False</code> &rarr; branch chooses <strong>ask_clarify</strong>, not decide</td></tr>
+  <tr><td>ask_clarify <em>(bot's turn — sends its own request)</em></td><td>the bot asks: <em>"refund, tracking, or cancellation?"</em> — this is the retail bot's own first request back to the customer, and in a real system the run pauses here until someone answers</td></tr>
+  <tr><td><em>(customer's turn — the follow-up)</em></td><td>the customer replies: <em>"no i just want to know where is my parcel"</em> — appended to the original message in the bag, not overwriting it</td></tr>
+  <tr><td>classify <em>(again — the backward edge)</em></td><td>on the combined message: <code>intent: "unknown" &rarr; "track"</code>, <code>confident: False &rarr; True</code> &rarr; branch chooses <strong>decide</strong></td></tr>
+  <tr><td>decide</td><td class="yes"><code>decision="SENT_TRACKING"</code> — correct, and it took exactly one question</td></tr>
+</table>
+
+<svg viewBox="0 0 680 190" width="100%" style="max-width:680px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <defs><marker id="z1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#8a8578"/></marker>
+  <marker id="z2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#a8451f"/></marker></defs>
+  <text x="20" y="24" font-family="-apple-system,sans-serif" font-size="12" font-weight="700" fill="#1f5f8b">THE SMALLEST VERSION — TWO NODES, ONE BACKWARD ARROW</text>
+
+  <rect x="40" y="76" width="130" height="42" rx="6" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+  <text x="105" y="102" text-anchor="middle" fill="#1f5f8b" font-weight="700" font-size="12">classify</text>
+
+  <rect x="270" y="40" width="150" height="42" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+  <text x="345" y="66" text-anchor="middle" fill="#2e6b3e" font-weight="700" font-size="12">ask_clarify</text>
+
+  <rect x="270" y="112" width="150" height="42" rx="6" fill="#fff" stroke="#c9d6e2"/>
+  <text x="345" y="138" text-anchor="middle" fill="#333" font-size="12">decide</text>
+
+  <line x1="170" y1="88" x2="262" y2="62" stroke="#8a8578" stroke-width="1.5" marker-end="url(#z1)"/>
+  <text x="185" y="70" font-size="10" fill="#777">unsure</text>
+
+  <line x1="170" y1="108" x2="262" y2="130" stroke="#8a8578" stroke-width="1.5" marker-end="url(#z1)"/>
+  <text x="185" y="128" font-size="10" fill="#777">confident</text>
+
+  <path d="M345,38 C345,10 105,10 105,74" fill="none" stroke="#a8451f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#z2)"/>
+  <text x="150" y="20" font-size="10.5" fill="#a8451f" font-weight="700">THE BACKWARD EDGE — the one thing a fixed pipeline cannot have</text>
+
+  <line x1="20" y1="168" x2="660" y2="168" stroke="#e2ded8"/>
+  <text x="20" y="184" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Remove the backward edge and this is a three-step pipeline. Add it back and it's a graph — same two nodes, one new arrow.</text>
+</svg>
+
+<div class="verdict">
+<div class="label">The whole lesson, in one line</div>
+Same node, same logic inside it, same model if there were one. <strong>The only difference is that one arrow points backward.</strong> Pipeline: guessed a refund. Graph: asked one question and got it right. A graph isn't smarter than a pipeline — it has a bigger vocabulary of moves.
+</div>
+
+<div class="trythis">
+<div class="label">Try this before Day 1</div>
+<strong>(1)</strong> Feed <code>classify</code> the message <em>"I want my money back"</em> instead, and redo Step 1 by hand. <code>refund</code> phrases match immediately — <code>confident=True</code> on the first pass, no loop needed at all. Not every request needs the backward edge; it only fires when it's actually useful.<br><br>
+<strong>(2)</strong> Now imagine the customer's second reply is just <em>"nope"</em> — still no matching words. If <code>ask_clarify &rarr; classify</code> has no counter, this repeats forever, and every trip round costs a real LLM call. What stops it, and who decided the stopping point, is the first thing Day 1 covers in the full six-node version of this exact example.
+</div>
+
+<h2>5. The Whole Week, in One Picture</h2>
+
+<p>The two-node loop above is the entire idea. Everything from here is what a serious system needs on top of it before you'd trust it with real customers, real money, or a regulator.</p>
+
+<svg viewBox="0 0 760 300" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
+  <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE SIX DAYS, LAYERED ON THE LOOP</text>
+  <text x="24" y="43" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">Each box is one thing the two-node loop doesn't have yet.</text>
+
+  <g font-family="-apple-system,sans-serif" font-size="10.5">
+    <rect x="24" y="58" width="150" height="46" rx="6" fill="#eef4fa" stroke="#1f5f8b" stroke-width="1.5"/>
+    <text x="99" y="78" text-anchor="middle" fill="#1f5f8b" font-weight="700">the loop itself</text>
+    <text x="99" y="94" text-anchor="middle" fill="#555">state / node / edge</text>
+    <text x="99" y="112" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="10">DAY 1</text>
+
+    <rect x="196" y="58" width="150" height="46" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="271" y="78" text-anchor="middle" fill="#333" font-weight="700">which shape</text>
+    <text x="271" y="94" text-anchor="middle" fill="#777">chain, graph, or none</text>
+    <text x="271" y="112" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="10">DAY 2</text>
+
+    <rect x="368" y="58" width="150" height="46" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="443" y="78" text-anchor="middle" fill="#333" font-weight="700">a human in the loop</text>
+    <text x="443" y="94" text-anchor="middle" fill="#777">pause, gate, resume</text>
+    <text x="443" y="112" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="10">DAY 3</text>
+
+    <rect x="540" y="58" width="196" height="46" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="638" y="78" text-anchor="middle" fill="#333" font-weight="700">when a step fails</text>
+    <text x="638" y="94" text-anchor="middle" fill="#777">retries, backoff, compounding error</text>
+    <text x="638" y="112" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="10">DAY 4</text>
+
+    <rect x="24" y="150" width="150" height="46" rx="6" fill="#fff" stroke="#c9d6e2"/>
+    <text x="99" y="170" text-anchor="middle" fill="#333" font-weight="700">surviving a crash</text>
+    <text x="99" y="186" text-anchor="middle" fill="#777">checkpoints in Postgres</text>
+    <text x="99" y="204" text-anchor="middle" fill="#a8451f" font-weight="700" font-size="10">DAY 5</text>
+
+    <rect x="196" y="150" width="322" height="46" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="357" y="170" text-anchor="middle" fill="#2e6b3e" font-weight="700">the whole graph, justified end to end</text>
+    <text x="357" y="186" text-anchor="middle" fill="#555">one ADR, a number behind every edge</text>
+    <text x="357" y="204" text-anchor="middle" fill="#2e6b3e" font-weight="700" font-size="10">DAYS 6&#8211;7</text>
+  </g>
+
+  <line x1="24" y1="240" x2="736" y2="240" stroke="#e2ded8"/>
+  <text x="24" y="262" font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">Notice what's <em>not</em> a separate box: a smarter model. None of these six days make the model better at anything — they make the system around it survive being wrong sometimes.</text>
+  <text x="24" y="282" font-family="-apple-system,sans-serif" font-size="10.5" fill="#777">That's the whole differentiator this week is built around: an agent framework is a reliability discipline wearing an AI costume.</text>
+</svg>
+
+<div class="verdict">
+<div class="label">The orientation to hold onto all week</div>
+<strong>What goes in the shared state is the decision with the least room to be wrong.</strong> Nodes and edges are cheap to add later — Day 2's four shapes are all interchangeable on top of the same state. But every node reads and writes that one bag, so adding a field on day 40 means auditing every existing node for whether it should react to it. This is the same asymmetry as choosing chunk grain in Week 3: cheap to change downstream, expensive to change at the root.
+</div>
+
+<h2>6. Every Word You Need, Defined Once</h2>
+
+<dl class="glossary">
+  <dt>agent</dt>
+  <dd>A program that decides what to do next from what it finds, rather than running a fixed order. Nothing more mystical than that.</dd>
+
+  <dt>orchestration</dt>
+  <dd>The plumbing around the decision: where the decision points are, what triggers a loop, who gets asked, and what guarantees it stops. This whole week.</dd>
+
+  <dt>state</dt>
+  <dd><strong>Plain:</strong> a bag of everything known so far. <em>Your terms:</em> one row you keep running <code>UPDATE</code> on.</dd>
+
+  <dt>node</dt>
+  <dd><strong>Plain:</strong> one step — reads the bag, does something, puts something back. <em>Your terms:</em> an <code>UPDATE</code> statement.</dd>
+
+  <dt>edge</dt>
+  <dd><strong>Plain:</strong> what runs next. Fixed, or conditional on the state. <em>Your terms:</em> a <code>CASE</code>/<code>WHERE</code> deciding the next statement.</dd>
+
+  <dt>backward edge / cycle</dt>
+  <dd>An edge that sends the run to a node it already visited, now with more in the bag. The one capability a fixed pipeline (a DAG) cannot have by definition — the "A" in DAG means acyclic.</dd>
+
+  <dt>exit condition</dt>
+  <dd>The rule guaranteeing a cycle eventually leaves. Must be tied to the business ("give up after 2 questions"), not to model confidence — a genuinely ambiguous input stays ambiguous forever and every extra turn is a paid call. Day 1.</dd>
+
+  <dt>step limit / recursion limit</dt>
+  <dd>A hard cap on total steps, purely as a backstop. If the step limit is what actually stopped your agent, you have a bug, not a design — it should never be the thing that fires.</dd>
+
+  <dt>interrupt</dt>
+  <dd>Pause the run before a node, wait for a human, resume later — possibly days later, on different hardware. Requires the state to be durably saved first. Day 3.</dd>
+
+  <dt>checkpoint</dt>
+  <dd>The saved copy of the state (and where execution paused) that makes resuming possible after a crash, a pause, or a redeploy. Day 5.</dd>
+
+  <dt>retry</dt>
+  <dd>Re-running a node after a failure. Only correct for failures that are actually transient — retrying a wrong-but-successful LLM call just re-produces the same wrong answer with extra latency. Day 4.</dd>
+
+  <dt>framework</dt>
+  <dd>Software (LangGraph and similar) that gives you the loop, checkpointing, interrupts, and a nicer API, so you don't hand-roll the ~40 lines in Day 1's companion script yourself. Day 2 covers when you need one at all.</dd>
+</dl>
+
+<h2>7. What Agent Orchestration Is Not</h2>
+
+<table class="matrix-table">
+  <tr><th>Confusion</th><th>The correction</th></tr>
+  <tr><td>"More tools attached means a smarter agent."</td><td>More tools means more branches that can go wrong. The simplest shape that satisfies the requirement wins — Day 2's whole argument.</td></tr>
+  <tr><td>"A framework like LangGraph makes an agent reliable."</td><td>A framework gives you checkpointing and interrupts as machinery. Reliability — retry policy, failure classification, backoff — is engineering you still do. Day 4.</td></tr>
+  <tr><td>"Loops mean it can just keep trying until it's right."</td><td>Every loop needs an exit condition guaranteed to fire. "Keep trying" without one is the most common way to burn money overnight. Day 1.</td></tr>
+  <tr><td>"Human-in-the-loop means a person reviews everything."</td><td>Review-everything doesn't scale and isn't what the arithmetic supports — the gate goes where the numbers say, not everywhere. Day 3.</td></tr>
+  <tr><td>"Checkpointing is a nice-to-have for crash recovery."</td><td>For a loop that can legitimately run for weeks (insurance evidence-gathering), it's load-bearing infrastructure, not a nicety. Day 5.</td></tr>
+  <tr><td>"Agent orchestration means picking LangGraph vs. CrewAI vs. AutoGen."</td><td>Sometimes it means picking none of them — one LLM call with a tool or two is a valid, common answer. Day 2 makes that case with numbers.</td></tr>
+</table>
+
+<h2>8. The Same Loop, Three Domains</h2>
+
+<div class="domains">
+  <div class="retail">
+    <div class="dhead">Retail — support agent</div>
+    <p><span class="kv">classify &#8594; ask &#8594; classify<br>&#8594; decide</span></p>
+    <p>The loop above, verbatim. High volume, seconds per turn — the loop has to be short because every extra turn multiplies across millions of conversations.</p>
+  </div>
+  <div class="ins">
+    <div class="dhead">Insurance — underwriting</div>
+    <p><span class="kv">gather &#8594; check_missing<br>&#8594; gather &#8594; assess</span></p>
+    <p>Same shape, but the loop can span <em>weeks</em> waiting on lab results. That's what makes Day 5's checkpointing non-optional here specifically.</p>
+  </div>
+  <div class="fin">
+    <div class="dhead">Fintech — dispute handler</div>
+    <p><span class="kv">intake &#8594; gather_evidence<br>&#8594; decide</span></p>
+    <p>Same shape again, but the exit condition is a regulatory clock, not a tuning parameter — the network deadline doesn't care how confident the model is.</p>
+  </div>
+</div>
+
+<div class="caution">
+<div class="label">The pattern to notice before Day 1</div>
+All three are the identical gather/check loop feeding a decision. What changes across them is <strong>who sets the exit condition</strong> — customer patience, an underwriting deadline, a regulatory clock. That's the recurring question this whole week keeps asking: not "which framework," but "when does this stop, and who decided that."
+</div>
+
+<h2>9. Check Yourself Before Day 1</h2>
+
+<div class="quiz-container">
+<h3>Foundations Check</h3>
+
+<div class="quiz">
+<div class="q">1. In one sentence, what does an agent actually do differently from a normal program?</div>
+<button data-correct="false">It uses an LLM somewhere in its execution.</button>
+<button data-correct="true">It decides what to do next based on what it finds along the way, instead of running a fixed order chosen at design time. Orchestration is the plumbing that makes that decision-making safe.</button>
+<button data-correct="false">It runs multiple steps in parallel instead of sequentially.</button>
+<button data-correct="false">It persists its state to a database between requests.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">2. A fixed pipeline (DAG) hits an ambiguous input. What actually happens, and why?</div>
+<button data-correct="false">It throws an exception and the run stops, waiting for a developer to fix the code.</button>
+<button data-correct="true">It takes the only forward branch it has and produces a confident-looking wrong answer — because a DAG has no arrow that means "ask a question and come back." Ambiguity gets guessed at, not surfaced.</button>
+<button data-correct="false">It automatically retries the same step with a different random seed.</button>
+<button data-correct="false">It routes to a default "unknown" branch that a human reviews before anything runs.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">3. In the two-node example (classify / decide), what is the one thing added to turn the pipeline into a graph?</div>
+<button data-correct="false">A second LLM call inside the classify node to double-check its own answer.</button>
+<button data-correct="true">One backward edge: ask_clarify routes back to classify with more in the state, so classify runs a second time on a fuller message. Same nodes, same logic — the only difference is that one arrow points backward.</button>
+<button data-correct="false">A vector database that stores prior customer messages for context.</button>
+<button data-correct="false">A rule engine that replaces the classify node's keyword matching.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">4. Why can't "loop until the model is confident" be the exit condition for a clarification loop?</div>
+<button data-correct="false">Because LangGraph's API doesn't expose a way to check model confidence mid-run.</button>
+<button data-correct="true">Because a genuinely ambiguous message stays ambiguous forever — the model never becomes confident — so the loop never exits on its own, and every extra turn is a paid LLM call. The exit condition has to come from the business ("give up after 2 questions"), not from the model.</button>
+<button data-correct="false">Because confidence scores from LLMs are not calibrated and shouldn't be trusted at all.</button>
+<button data-correct="false">Because it would require running two models in parallel to compare confidence.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">5. Which of these is true about frameworks like LangGraph?</div>
+<button data-correct="false">They make an agent reliable by construction, so custom retry logic is usually unnecessary.</button>
+<button data-correct="true">They give you the loop plus bookkeeping — checkpointing, interrupts, a nicer API — that you'd otherwise hand-roll. Reliability itself (retry policy, failure classification) is engineering you still have to do on top.</button>
+<button data-correct="false">They are required any time an LLM call is involved, regardless of whether the workflow loops.</button>
+<button data-correct="false">They replace the need to design what goes in the shared state.</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz">
+<div class="q">6. Retail, insurance, and fintech all run the same gather/check-then-decide loop. What differs between them, and why does it matter?</div>
+<button data-correct="false">The number of nodes — regulated domains always need strictly more steps.</button>
+<button data-correct="true">Who sets the exit condition: customer patience (seconds), an underwriting deadline (weeks), or a regulatory clock (fixed by rule). The interesting design decision in agent orchestration is almost never "which framework" — it's "when does this stop, and who decided that."</button>
+<button data-correct="false">Whether an LLM is involved at all — fintech and insurance use deterministic rules engines instead.</button>
+<button data-correct="false">The programming language the graph engine is implemented in.</button>
+<div class="feedback"></div>
+</div>
+
+</div>
+
+<p class="ask-agent">Anything in the glossary still fuzzy? Ask before moving on — Day 1 assumes every term on this page, and it's much cheaper to ask now than to nod along for six days.</p>
+
+<div class="nav">
+<a href="../../week3/day6-7/0018-checkpoint-retrieval-redesign.html">&larr; Week 3 Day 6-7: ADR-003</a>
+<a href="../day1/0019-langgraph-fundamentals.html">Day 1: LangGraph Fundamentals &rarr;</a>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function(quiz) {
+  var buttons = quiz.querySelectorAll('button');
+  var feedback = quiz.querySelector('.feedback');
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var correct = btn.getAttribute('data-correct') === 'true';
+      buttons.forEach(function(b) { b.disabled = true; });
+      btn.classList.add(correct ? 'correct' : 'incorrect');
+      if (!correct) {
+        buttons.forEach(function(b) {
+          if (b.getAttribute('data-correct') === 'true') b.classList.add('correct');
+        });
+      }
+      feedback.style.display = 'block';
+      feedback.textContent = correct ? '✅ Correct.' : '❌ Review the section above.';
+    });
+  });
+});
+</script>
+</body>
+</html>
