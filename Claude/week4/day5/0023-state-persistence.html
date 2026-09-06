@@ -76,7 +76,7 @@ A write after each node, and a <code>SELECT ... ORDER BY step DESC LIMIT 1</code
 
 <h2>2. The Estimate Everyone Makes, and Why It's Wrong</h2>
 
-<p>The natural sizing is <code>runs × steps × state_size</code>. It's wrong, and the reason is worth internalising because it changes the answer by 4–8×.</p>
+<p>The natural sizing is <code>runs × steps × state_size</code>. It's wrong, and the reason is worth internalising because it changes the answer by <strong>3–9×</strong> depending on the domain and how many steps the agent takes — and the gap gets worse the more capable (and longer-running) the agent gets.</p>
 
 <div class="plain">
 <div class="label">In plain words</div>
@@ -99,6 +99,7 @@ A write after each node, and a <code>SELECT ... ORDER BY step DESC LIMIT 1</code
          4            59.8            20.8      2.9x
          6           113.1            28.6      4.0x   &lt;-- yours
         10           266.5            44.2      6.0x
+        14           482.3            59.8      8.1x
         20           923.0            83.2     11.1x
         30         1,969.5           122.2     16.1x</div>
 
@@ -267,7 +268,7 @@ python checkpoint_sizing.py --retain-days 7      # what retention alone buys</di
 <div class="quiz">
 <div class="q">1. You size checkpoints as <code>runs × steps × state_size</code>. What's wrong with that?</div>
 <button data-correct="false">Nothing — it's the standard formula.</button>
-<button data-correct="true">It assumes state size is constant, but state grows as the run proceeds — message history and tool results accumulate. Writing the full state each step gives 1+2+3+…+N = N(N+1)/2 bytes per run, so storage is <em>quadratic</em> in step count. The naive figure is off by 3.6× at 6 steps and 11× at 20.</button>
+<button data-correct="true">It assumes state size is constant, but state grows as the run proceeds — message history and tool results accumulate. Writing the full state each step gives 1+2+3+…+N = N(N+1)/2 bytes per run, so storage is <em>quadratic</em> in step count. The naive figure is off by 3.6× at 6 steps and 8.9× at 20.</button>
 <button data-correct="false">It ignores compression, which typically reduces JSONB by 60%.</button>
 <button data-correct="false">It double-counts, because LangGraph only checkpoints at conditional edges.</button>
 <div class="feedback"></div>

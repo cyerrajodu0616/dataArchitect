@@ -33,3 +33,6 @@ wheels/
 #creds
 .env
 __pycache__/
+
+# personal, not for the repo
+interview-profile/

@@ -62,7 +62,7 @@ DOMAIN_PRESETS = {
         steps=6, step_success=0.99, runs_per_month=1_300_000,
         side_effect_value=42.0, transient_share=0.75,
         note="Short graphs, enormous volume. At 6 steps and 99% per step you "
-             "fail 5.9% of runs — that is 77,000 failed conversations a month "
+             "fail 5.9% of runs — that is 76,000 failed conversations a month "
              "before you retry anything. Volume is what makes a small "
              "per-step failure rate a staffing problem."),
     "insurance": dict(

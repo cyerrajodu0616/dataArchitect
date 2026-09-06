@@ -78,19 +78,13 @@
     <text x="459" y="95" text-anchor="middle" fill="#777">30-day window</text>
     <path d="M332,85 L396,85" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
 
-    <rect x="588" y="40" width="148" height="38" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
-    <text x="662" y="56" text-anchor="middle" fill="#2e6b3e" font-weight="700">issue_refund</text>
-    <text x="662" y="69" text-anchor="middle" fill="#555">idempotency key required</text>
-    <path d="M520,80 C550,80 556,62 584,60" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
-    <text x="524" y="52" fill="#555" font-size="9">&#8804; $170</text>
-
-    <rect x="588" y="98" width="148" height="38" rx="6" fill="#fdf4ef" stroke="#a8451f" stroke-width="1.5"/>
-    <text x="662" y="114" text-anchor="middle" fill="#a8451f" font-weight="700">human_approve</text>
-    <text x="662" y="127" text-anchor="middle" fill="#555">interrupt_before</text>
-    <path d="M520,92 C550,92 556,114 584,116" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
-    <text x="524" y="140" fill="#a8451f" font-size="9">&gt; $170</text>
-    <path d="M662,140 C662,164 700,164 700,80" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
-    <text x="668" y="160" fill="#777" font-size="9">approved &#8594; issue</text>
+    <rect x="596" y="66" width="136" height="38" rx="6" fill="#f0f6f1" stroke="#2e6b3e" stroke-width="1.5"/>
+    <text x="664" y="82" text-anchor="middle" fill="#2e6b3e" font-weight="700">execute_refund</text>
+    <text x="664" y="95" text-anchor="middle" fill="#555">idempotency key</text>
+    <path d="M520,78 C550,78 560,74 592,74" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+    <text x="524" y="68" fill="#555" font-size="9">&#8804; $170</text>
+    <path d="M520,92 C550,92 560,96 592,96" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
+    <text x="524" y="112" fill="#a8451f" font-size="9">&gt; $170 &#8594; interrupt_before</text>
   </g>
 
   <line x1="24" y1="210" x2="736" y2="210" stroke="#e2ded8"/>
@@ -98,9 +92,9 @@
   <g font-family="-apple-system,sans-serif" font-size="10.5" fill="#333">
     <text x="24" y="256">&#8226; <tspan font-weight="700">classify &#8594; ask_clarify</tspan> when unclear &#8212; a chain guesses here, and guessed a refund for a tracking request (Day 1)</text>
     <text x="24" y="276">&#8226; <tspan font-weight="700">ask_clarify &#8594; classify</tspan>, max 2 &#8212; customers won&#8217;t answer a third. The exit condition, not the step limit (Day 1)</text>
-    <text x="24" y="296">&#8226; <tspan font-weight="700">check_policy &#8594; human_approve</tspan> above $170 &#8212; derived, not chosen. $56 is the textbook answer and ignores reviewer capacity (Day 3)</text>
-    <text x="24" y="316">&#8226; <tspan font-weight="700">issue_refund</tspan> carries an idempotency key &#8212; without it, ambiguous failures duplicate refunds (Day 4)</text>
-    <text x="24" y="336">&#8226; <tspan font-weight="700">6 nodes, not 12</tspan> &#8212; reliability multiplies (94.1% vs 88.6%) and checkpoint storage is quadratic (113 GB vs 482 GB) (Days 4, 5)</text>
+    <text x="24" y="296">&#8226; <tspan font-weight="700">check_policy &#8594; execute_refund</tspan>, gated above $170 &#8212; derived, not chosen. $56 is the textbook answer and ignores reviewer capacity (Day 3)</text>
+    <text x="24" y="316">&#8226; <tspan font-weight="700">execute_refund</tspan> carries an idempotency key &#8212; without it, ambiguous failures duplicate refunds (Day 4)</text>
+    <text x="24" y="336">&#8226; <tspan font-weight="700">6 nodes, not 12</tspan> &#8212; reliability multiplies (94.1% vs 88.6%) and checkpoint storage is quadratic (113 GB vs 367 GB) (Days 4, 5)</text>
   </g>
   <text x="24" y="366" font-family="-apple-system,sans-serif" font-size="10.5" fill="#2e6b3e" font-weight="700">Five edges, five numbers. That is what &#8220;justify each edge&#8221; means.</text>
 </svg>
@@ -132,10 +126,10 @@
 <h3>Alternatives considered</h3>
 <table class="matrix-table">
   <tr><th>Alternative</th><th>Why not</th></tr>
-  <tr><td><strong>Keep the chain</strong></td><td>Cannot express a backward edge. On the four requirement changes we scored it 12 damage points against the graph's 0 — three of the four need a rewrite.</td></tr>
+  <tr><td><strong>Keep the chain</strong></td><td>Cannot express a backward edge. On the four requirement changes we scored it 12 damage points against the graph's 0 — every one of the four needs a rewrite, not an edit or a bolt-on.</td></tr>
   <tr><td><strong>Raw API calls, no framework</strong></td><td>Genuinely tempting, and correct if we needed nothing else — it's ~40 lines we'd own outright. But "pause for a human" and "survive a crash" are the same requirement, and hand-rolling durable resumable state is the single biggest chunk of work on the list.</td></tr>
   <tr><td><strong>CrewAI / multi-agent</strong></td><td>Control flow becomes emergent — who speaks next and when it stops are decided at runtime. Fine for exploration, hard to defend when someone asks why a decision was made. For insurance and fintech that rules it out.</td></tr>
-  <tr><td><strong>12 smaller, cleaner nodes</strong></td><td>88.6% end-to-end instead of 94.1%, and 482 GB/month of checkpoints instead of 113 GB. Decomposition helps readability and costs reliability and storage — twice.</td></tr>
+  <tr><td><strong>12 smaller, cleaner nodes</strong></td><td>88.6% end-to-end instead of 94.1%, and 367 GB/month of checkpoints instead of 113 GB. Decomposition helps readability and costs reliability and storage — twice.</td></tr>
   <tr><td><strong>Redis for checkpoints</strong></td><td>Solves a write-rate problem we don't have (0.5% of OLTP) and re-creates the dual-write problem — now between an action and the record of it.</td></tr>
   <tr><td><strong>Review every refund</strong></td><td>Two reviewers can process 6,400 items/month. Routing 120,000 means 113,600 auto-approved on timeout, and the 6,400 seen arrive at 40/hour where catch rate has fallen to 25%. It costs more and controls less.</td></tr>
 </table>
