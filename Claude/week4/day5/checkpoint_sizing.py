@@ -198,8 +198,8 @@ def report(a, note):
          "you can no longer read one checkpoint standalone; "
          "you replay from the last full one"),
         ("trim state (drop raw tool output)", steady_full * 0.35,
-         "the biggest single win, and it is free — most state is tool "
-         "responses nobody re-reads"),
+         "usually the biggest win; retain decision inputs and audit/replay "
+         "references"),
         ("retain 7 days instead", real_kb / 1e6 * (7 / 30.0),
          "only legal if nothing needs the history"),
     ]
@@ -214,7 +214,7 @@ def report(a, note):
         print(f"      {line}")
     print()
     print("  Take the levers in that order. TRIMMING THE STATE is first because")
-    print("  it is free and it shrinks everything downstream — write rate, WAL,")
+    print("  it often shrinks everything downstream — write rate, WAL,")
     print("  replication, backup, and the prompt if any of that state is being")
     print("  passed to the model. Delta checkpointing is second. Retention is")
     print("  last because it is usually not an engineering decision at all.")
@@ -237,7 +237,7 @@ def report(a, note):
     print(f"  {'option':<40}{'$/month':>13}   note")
     print("  " + "-" * 88)
     print(f"  {'Postgres (the ADR-002 instance)':<40}"
-          f"{steady_delta * PG_GB_MONTH:>13,.0f}   already there, transactional")
+          f"{steady_delta * PG_GB_MONTH:>13,.0f}   local atomicity is possible")
     print(f"  {'Redis hot + Postgres durable':<40}"
           f"{hot_gb * REDIS_GB_MONTH + steady_delta * PG_GB_MONTH:>13,.0f}"
           f"   two systems, two failure modes")
@@ -246,13 +246,13 @@ def report(a, note):
         "The ADR-002 argument applies again, and more strongly:",
         "",
         "  ONE SYSTEM. The checkpoint and the business record it refers to live",
-        "  in the same database, so 'refund issued' and 'agent state says refund",
-        "  issued' can be written in ONE TRANSACTION. Split them and you have",
-        "  re-created the dual-write problem from Week 2 Day 2 — with the same",
-        "  drift, and now the drift is between an action and the record of it.",
+        "  in the same database, so local writes CAN share one explicit transaction",
+        "  when the integration uses the same connection and boundary. Co-location",
+        "  alone is not atomic, and external side effects still need idempotency plus",
+        "  an outbox/inbox or reconciliation path.",
         "",
-        "  That transactional point is the strongest argument in this lesson and",
-        "  it is usually left out of the Redis-vs-Postgres discussion entirely.",
+        "  That option for local atomicity is a strong argument, but only after",
+        "  naming the explicit transaction boundary and the external-side-effect path.",
         "",
         "  ONE BACKUP, ONE RESTORE. A restore that recovers the business data",
         "  but not the agent state leaves in-flight runs pointing at rows that",
@@ -297,8 +297,8 @@ def report(a, note):
         "  PRIMARY KEY (thread_id, step)",
         ");",
         "",
-        "-- resume = SELECT ... ORDER BY step DESC LIMIT 1. That is the whole",
-        "-- 'magic' of a checkpointer.",
+        "-- locating the latest row is the minimum mental model. A production",
+        "-- checkpointer also stores versions, lineage, pending writes and metadata.",
         "CREATE INDEX ON agent_checkpoint (created_at);   -- for retention sweeps",
         "",
         "Partition by created_at if retention is short: dropping a partition is",

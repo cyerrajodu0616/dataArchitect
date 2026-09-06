@@ -84,7 +84,7 @@
     <path d="M520,78 C550,78 560,74 592,74" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
     <text x="524" y="68" fill="#555" font-size="9">&#8804; $170</text>
     <path d="M520,92 C550,92 560,96 592,96" fill="none" stroke="#8a8578" stroke-width="1.5" marker-end="url(#g1)"/>
-    <text x="524" y="112" fill="#a8451f" font-size="9">&gt; $170 &#8594; interrupt_before</text>
+    <text x="524" y="112" fill="#a8451f" font-size="9">&gt; $170 &#8594; interrupt()</text>
   </g>
 
   <line x1="24" y1="210" x2="736" y2="210" stroke="#e2ded8"/>
@@ -111,7 +111,7 @@
 <h3>Decision</h3>
 <ol>
 <li><strong>State machine, not a chain.</strong> LangGraph, with explicit nodes and conditional edges.</li>
-<li><strong>Six nodes, deliberately few.</strong> Every additional node costs reliability multiplicatively and checkpoint storage quadratically.</li>
+<li><strong>Six nodes, deliberately few.</strong> Under the independent required-step model, additional nodes cost reliability multiplicatively; full snapshots of linearly growing state cost storage quadratically.</li>
 <li><strong>One clarification loop</strong>, exit after 2 questions to a human handoff. The step limit is a backstop, not the exit condition.</li>
 <li><strong>Human approval above $170</strong>, derived from review cost, error rate and reviewer capacity — not chosen in a meeting.</li>
 <li><strong>Idempotency keys on every side-effecting call</strong>, shipped <em>before</em> retries, plus exponential backoff with jitter and a circuit breaker on error rate.</li>
@@ -121,7 +121,7 @@
 <h3>Consequences</h3>
 <p><strong>Accepted costs.</strong> A framework dependency with a release cadence and abstractions the team must eventually read the source of. A review queue at ~1,818 items/month needing 2 reviewers. 29 GB/month of checkpoint storage and 12 writes/sec of additional load on the OLTP instance — 0.5% of existing write traffic.</p>
 <p><strong>Accepted risks.</strong> The $170 threshold rests on an assumed 4% agent error rate that we have not yet measured directly. The reviewer-fatigue curve is a model, not an observation. Both are named in §5 as the first things to revisit.</p>
-<p><strong>What we gain.</strong> Ambiguous requests get a question instead of a guess. Runs survive restarts and multi-day pauses. Duplicate side effects go to zero. And the control flow is explicit, which is what makes "why did the agent do that" answerable.</p>
+<p><strong>What we gain.</strong> Ambiguous requests get a question instead of a guess. Runs survive restarts and multi-day pauses. Duplicate side effects are suppressed when the receiver atomically enforces stable idempotency keys and request fingerprints. And the control flow is explicit, which is what makes "why did the agent do that" answerable.</p>
 
 <h3>Alternatives considered</h3>
 <table class="matrix-table">
@@ -131,7 +131,7 @@
   <tr><td><strong>CrewAI / multi-agent</strong></td><td>Control flow becomes emergent — who speaks next and when it stops are decided at runtime. Fine for exploration, hard to defend when someone asks why a decision was made. For insurance and fintech that rules it out.</td></tr>
   <tr><td><strong>12 smaller, cleaner nodes</strong></td><td>88.6% end-to-end instead of 94.1%, and 367 GB/month of checkpoints instead of 113 GB. Decomposition helps readability and costs reliability and storage — twice.</td></tr>
   <tr><td><strong>Redis for checkpoints</strong></td><td>Solves a write-rate problem we don't have (0.5% of OLTP) and re-creates the dual-write problem — now between an action and the record of it.</td></tr>
-  <tr><td><strong>Review every refund</strong></td><td>Two reviewers can process 6,400 items/month. Routing 120,000 means 113,600 auto-approved on timeout, and the 6,400 seen arrive at 40/hour where catch rate has fallen to 25%. It costs more and controls less.</td></tr>
+  <tr><td><strong>Review every refund</strong></td><td>Two reviewers can process 6,400 items/month, leaving 113,600 over capacity. Auto-approval on timeout would be an unsafe fail-open policy; fail-closed expiry avoids unreviewed execution but creates a large blocked queue. The 6,400 seen arrive at 40/hour where catch rate has fallen to 25%.</td></tr>
 </table>
 
 <h3>What would change our mind</h3>
@@ -197,7 +197,76 @@ Three of the six ADR decisions depend on <strong>one number nobody has measured:
 <p style="margin-top:0.7rem;margin-bottom:0;">The models are sound and their sensitivity is explicit, which is the useful state to be in — but "we assumed 4%" is the sentence to volunteer rather than have extracted. Sampling 200 actions and grading them is a week of work and it firms up half this document.</p>
 </div>
 
-<h2>6. Interview Drills</h2>
+<h2>6. Integrated Lab: Prove the Production Invariants</h2>
+
+<p><code>production_agent_checkpoint.py</code> turns the ADR into an executable deterministic graph. It uses a real LangGraph state machine, checkpointed threads, dynamic <code>interrupt()</code>/<code>Command(resume=...)</code> approval, node-level <code>RetryPolicy</code>, a receiver-enforced idempotency record, and an append-only audit trace.</p>
+
+<table class="matrix-table">
+  <tr><th>Scenario</th><th>Expected path</th><th>Invariant proved</th></tr>
+  <tr><td><strong>Tracking</strong></td><td><code>classify → handle_track</code></td><td>No refund node is reachable for a tracking intent.</td></tr>
+  <tr><td><strong>$240 approved</strong></td><td><code>check_policy → request_approval → execute_refund</code></td><td>No money moves before a valid human response.</td></tr>
+  <tr><td><strong>$240 rejected</strong></td><td><code>request_approval → finish</code></td><td>Rejection is terminal and produces zero side effects.</td></tr>
+  <tr><td><strong>Approval expired</strong></td><td><code>request_approval → finish</code></td><td>Timeout fails closed; it never silently approves.</td></tr>
+  <tr><td><strong>Response lost after commit</strong></td><td><code>execute_refund</code> retries once</td><td>The stable key returns the stored refund; side-effect count remains one.</td></tr>
+</table>
+
+<div class="code-inline">TRACKING
+  delta:    intent=track
+  route:    classify -> handle_track
+  boundary: checkpoint after each completed node; no interrupt
+  effect:   send tracking response only
+  audit:    terminal route/decision event in production
+  result:   SENT_TRACKING
+
+APPROVED REFUND
+  delta:    intent=refund, needs_approval=true, approval_status=APPROVED
+  route:    classify -> check_policy -> request_approval -> execute_refund
+  boundary: interrupt payload checkpointed; same thread resumes with Command
+  effect:   one receiver-enforced refund under case_id:refund
+  audit:    reviewer APPROVED; system REFUND_EXECUTED with operation key
+  result:   REFUNDED
+
+REJECTED OR EXPIRED REFUND
+  delta:    approval_status=REJECTED or EXPIRED
+  route:    request_approval -> finish
+  boundary: saved interrupt resumes to a terminal, fail-closed branch
+  effect:   none
+  audit:    actor/reason/version/timestamp; expiry is a system policy event
+  result:   REJECTED or EXPIRED
+
+AMBIGUOUS AFTER COMMIT
+  delta:    refund_id absent on attempt 1; restored on deduplicated attempt 2
+  route:    execute_refund retries inside its node policy
+  boundary: receiver stored key+fingerprint+result before response was lost
+  effect:   one refund, despite two calls
+  audit:    ambiguous attempt, retry, deduplicated result, final execution
+  result:   REFUNDED</div>
+
+<h3>Production-readiness matrix</h3>
+<table class="matrix-table">
+  <tr><th>Control</th><th>Implementation</th><th>Test</th><th>Metric / alert</th><th>Owner</th></tr>
+  <tr><td>Approval gate</td><td>Authenticated callback, role check, version and expiry, fail-closed terminal state</td><td>Approve/reject/expire/stale/concurrent responses</td><td>Pending age; alert before SLA breach</td><td>Product + Risk</td></tr>
+  <tr><td>Side-effect safety</td><td>Stable key, request fingerprint, atomic receiver record</td><td>Response lost after commit; concurrent duplicate</td><td>Dedup rate and payload conflicts; page on any conflict</td><td>Payments/API</td></tr>
+  <tr><td>Retry boundary</td><td>Typed errors, deadline, budget, full jitter, breaker</td><td>Transient/permanent/correlated outage</td><td>Attempts, exhaustion, breaker state; alert on open</td><td>Platform/SRE</td></tr>
+  <tr><td>Durable state</td><td>Postgres saver, lease/version guard, schema migration</td><td>Restart, duplicate resume, old schema, restore drill</td><td>Save latency, stale resumes, migration failures</td><td>Data Platform</td></tr>
+  <tr><td>Auditability</td><td>Append-only actor/action/version/key events</td><td>Every terminal path has complete lineage</td><td>Missing-event count; alert above zero</td><td>Security/Compliance</td></tr>
+  <tr><td>Dead-letter recovery</td><td>Replayable state envelope using original operation key</td><td>Exhaust and replay without restarting the case</td><td>DLQ depth/age; page at domain deadline risk</td><td>Operations</td></tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day6-7
+python production_agent_checkpoint.py tracking
+python production_agent_checkpoint.py refund-approved
+python production_agent_checkpoint.py refund-rejected
+python production_agent_checkpoint.py refund-expired
+python production_agent_checkpoint.py ambiguous-commit
+python -m unittest test_production_agent_checkpoint.py -v</div>
+
+<div class="caution">
+<div class="label">What this lab intentionally does not pretend</div>
+It uses <code>InMemorySaver</code> and deterministic rules so tests remain local and repeatable. Production substitutes a durable saver, real authentication/authorization, secrets, a transactional idempotency store, metrics, and an operational dead-letter queue. The graph topology transfers; the demo infrastructure does not.
+</div>
+
+<h2>7. Interview Drills</h2>
 
 <details>
 <summary>"Walk me through how you'd design an agent for customer refunds."</summary>
@@ -205,7 +274,7 @@ Three of the six ADR decisions depend on <strong>one number nobody has measured:
 <p>"I'd start by asking what it has to do when it's <em>unsure</em>, because that decides the shape. If there's no answer to that, a chain is fine and simpler. If it needs to ask a clarifying question and continue, that's a backward edge and you have a state machine whether or not you use a framework.</p>
 <p>Then I'd count the nodes and keep it small. Reliability multiplies — six nodes at 99% each is 94.1% end to end, twelve is 88.6% — and full-checkpoint storage is quadratic in step count, so splitting a node costs you twice. That runs against the instinct to decompose, and it's worth being explicit about the tradeoff.</p>
 <p>The approval gate I'd derive rather than pick. Review cost over error rate gives a first threshold, but that formula assumes reviewers never get tired. Once you model catch rate falling with queue depth, the optimum moves — on our numbers from $56 to $170 — and reviewing everything turns out to cost more and control less, because at 40 items an hour nobody's reading them.</p>
-<p>Then idempotency keys before retries, backoff with jitter, and Postgres checkpointing on the instance we already have — mostly because the checkpoint and the business record can then commit in one transaction, which avoids re-creating a dual-write problem between an action and the record of it."</p>
+<p>Then idempotency keys before retries, backoff with jitter, and Postgres checkpointing on the instance we already have. Co-location can support a single transaction for local writes if we integrate both through it; external payment calls still require idempotency and an outbox or reconciliation path."</p>
 </div>
 </details>
 
@@ -234,12 +303,12 @@ Three of the six ADR decisions depend on <strong>one number nobody has measured:
 <p>"Less than people expect on write rate and more than they expect on storage, and both surprises are worth knowing.</p>
 <p>On write rate: 6 steps at 1.3M runs a month is 7.8M writes, about 12 a second at peak. Against 2,400/sec of existing OLTP that's 0.5% — noise. People reach for Redis to solve a problem they haven't measured.</p>
 <p>On storage: the usual estimate is runs times steps times state size, and that's wrong because state grows as the run proceeds. Writing the full state each step gives you 1+2+3+…+N, so it's quadratic. At six steps that's 3.6× the naive number; at twenty it's 11×. Delta checkpoints bring it back to linear.</p>
-<p>Postgres because the checkpoint and the business record commit in one transaction. Split them and you've re-created the dual-write problem, except the drift is now between an action and the record of it — which is much worse to be inconsistent about than a stale index. Plus one backup and one restore: a restore that recovers business data but not agent state leaves in-flight runs pointing at rows that moved.</p>
+<p>Postgres because it keeps durable state near business data and can support one transaction for local writes when deliberately integrated. It is not automatically atomic with a framework checkpoint or an external action; those still need idempotency plus outbox/inbox or reconciliation. Co-location also simplifies backup and restore, provided recovery procedures keep checkpoint and business timelines consistent.</p>
 <p>I'd move off Postgres if checkpoint writes became a large share of a shared instance's load, or if state were large and hot and read every step. And if runs are short enough that nothing needs to survive, I wouldn't checkpoint at all — an in-memory saver is a legitimate choice that nobody suggests."</p>
 </div>
 </details>
 
-<h2>7. Companion Scripts</h2>
+<h2>8. Companion Scripts</h2>
 
 <table class="matrix-table">
   <tr><th>Decision</th><th>Script</th></tr>
@@ -248,13 +317,18 @@ Three of the six ADR decisions depend on <strong>one number nobody has measured:
   <tr><td>Where the approval gate goes</td><td><code>week4/day3/approval_economics.py</code></td></tr>
   <tr><td>Node count, retries, idempotency</td><td><code>week4/day4/reliability_math.py</code></td></tr>
   <tr><td>Checkpoint storage and write load</td><td><code>week4/day5/checkpoint_sizing.py</code></td></tr>
+  <tr><td>Framework runtime shapes</td><td><code>week4/day2/framework_shapes_lab.py</code></td></tr>
+  <tr><td>Approval interrupt lifecycle</td><td><code>week4/day3/approval_interrupt_lab.py</code></td></tr>
+  <tr><td>Reliability boundary</td><td><code>week4/day4/resilient_refund_lab.py</code></td></tr>
+  <tr><td>Checkpoint concurrency and migration</td><td><code>week4/day5/checkpoint_lifecycle_lab.py</code></td></tr>
+  <tr><td>Integrated production checkpoint</td><td><code>week4/day6-7/production_agent_checkpoint.py</code></td></tr>
   <tr><td>Where the vectors live (ADR-002)</td><td><code>week2/day3/sizing_ladder.py</code></td></tr>
   <tr><td>Retrieval pipeline (ADR-003)</td><td><code>week3/day1/chunk_cost_sweep.py</code>, <code>week3/day3/rerank_economics.py</code></td></tr>
 </table>
 
 <div class="nav">
 <a href="../day5/0023-state-persistence.html">&larr; Day 5: State Persistence</a>
-<a href="../../week5/day1/0025-context-windows-tokens-cost.html">Week 5 Day 1: LLM Fundamentals &rarr;</a>
+<a href="../../week5/day0/0025a-llm-fundamentals-from-zero.html">Week 5 Day 0: LLM Fundamentals &rarr;</a>
 </div>
 
 </body>
