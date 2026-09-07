@@ -143,10 +143,10 @@ def evaluate(threshold: float, a) -> dict:
 
     # THE HARD CONSTRAINT. You cannot review more than the team can physically
     # get through. Anything routed to review beyond capacity is not "reviewed
-    # late" — in a live system it is auto-approved on timeout, or it blocks the
-    # customer until someone gives up and approves it in bulk. Either way it
-    # gets no real scrutiny, and the model must say so rather than letting you
-    # buy safety you have not staffed.
+    # late". This model prices it as unreviewed, matching a deliberately unsafe
+    # fail-open timeout policy. Production should fail closed: expire, reject,
+    # or escalate it. Either way, the model must not let you buy review capacity
+    # you have not staffed.
     capacity = a.reviewers * WORK_HOURS_PER_MONTH * (60.0 / a.review_minutes)
     routed = reviewed
     actually_reviewed = min(routed, capacity)
@@ -259,8 +259,8 @@ def report(a, note):
         print()
         print("  This is the finding worth carrying: 'review everything' is not")
         print("  the safe default. It is an expensive way to CONVERT a real")
-        print("  control into a theatrical one, and the failure is invisible —")
-        print("  the approvals all show up signed.")
+        print("  control into a theatrical one. Under the modeled fail-open policy,")
+        print("  the unreviewed overflow can still look approved in a dashboard.")
         print()
 
     if best["routed"] > best["capacity"] * 0.9 and best["overflow"] < 1:
@@ -269,8 +269,8 @@ def report(a, note):
         print(f"  queue is {best['routed']:,.0f}/month against a capacity of"
               f" {best['capacity']:,.0f}. Lower the threshold")
         print(f"  by one step and the queue overflows — rows marked ! route more")
-        print(f"  than the team can physically read, and the excess gets approved")
-        print(f"  on a timeout with no scrutiny at all.")
+        print(f"  than the team can physically read. This model prices excess as")
+        print(f"  fail-open to expose the loss; production should expire fail-closed.")
         print()
         print("  So the real question is not 'what is the right threshold'. It is")
         print("  'how many reviewers do we have', and the threshold is whatever")

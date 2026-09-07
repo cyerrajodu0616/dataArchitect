@@ -76,7 +76,9 @@ g.add_node("ask_clarify", ask_clarify)
 g.add_conditional_edges("classify", route)     # route() picks the next node
 g.add_edge("ask_clarify", "classify")          # <-- backwards
 g.add_edge("approve", END)
-result = g.compile(checkpointer=pg).invoke(state, thread_id=case_id)
+result = g.compile(checkpointer=pg).invoke(
+    state, config={"configurable": {"thread_id": case_id}}
+)
 ''',
     "crew": '''
 # CREW — specialists with roles, talking to each other
@@ -130,8 +132,9 @@ CHANGES = [
                             "the loop position on resume. That is a "
                             "checkpointer, and you are now writing one."),
             chain=("rewrite", "Same problem, and no place to put the pause."),
-            graph=("edit", "interrupt_before=['approve'] plus a checkpointer. "
-                           "The framework already saves state per node."),
+            graph=("edit", "An approval node using interrupt() plus a "
+                           "checkpointer. Resume the same thread with "
+                           "Command(resume=decision)."),
             crew=("bolt-on", "Human-in-the-loop exists but resumption is "
                              "weaker; check how the framework persists a "
                              "half-finished conversation before relying on it."),

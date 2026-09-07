@@ -161,8 +161,9 @@ def report(a, note):
     print("  Did the refund go out?")
     print()
     print("  Retry and you might issue it twice. Do not retry and you might have")
-    print("  issued nothing. Neither choice is safe WITHOUT AN IDEMPOTENCY KEY —")
-    print("  and with one, both are.")
+    print("  issued nothing. Neither choice is safe without an idempotency protocol.")
+    print("  Safety requires a stable logical key plus receiver-side unique enforcement")
+    print("  and atomic storage of the request fingerprint, side effect, and result.")
     print()
 
     rng = random.Random(a.seed)
@@ -185,12 +186,12 @@ def report(a, note):
     print("  " + "-" * 88)
     print(f"  {'without idempotency keys':<28}{dup_per_month:>26,.0f}"
           f"{dup_per_month * a.side_effect_value:>14,.0f}")
-    print(f"  {'with idempotency keys':<28}{0:>26,.0f}{0:>14,.0f}")
+    print(f"  {'with enforced idempotency':<28}{0:>26,.0f}{0:>14,.0f}")
     print()
     print(f"  {dup_rate:.3%} of runs hit an ambiguous failure. That sounds small.")
     print(f"  At {a.runs_per_month:,} runs a month and ${a.side_effect_value:,.0f} per")
-    print(f"  side effect it is ${dup_per_month * a.side_effect_value:,.0f} a month, and")
-    print(f"  the fix is a UUID in a header.")
+    print(f"  side effect it is ${dup_per_month * a.side_effect_value:,.0f} a month.")
+    print(f"  A UUID header carries the key; receiver-side atomic enforcement is the fix.")
     print()
     for line in [
         "Say this precisely, because it is the distinction that matters:",
@@ -198,8 +199,8 @@ def report(a, note):
         "  a duplicate side effect is NOT a reliability problem.",
         "  it is a CORRECTNESS problem created by the reliability fix.",
         "",
-        "Retries make availability better and correctness worse, and only",
-        "idempotency lets you have both. Which is why 'add retries' is not a",
+        "Retries make availability better and correctness worse, and an enforced",
+        "idempotency protocol lets you have both. Which is why 'add retries' is not a",
         "complete answer to 'how do you handle failures' — the complete answer",
         "is 'retries plus idempotency keys, and here is which operations need",
         "them'.",

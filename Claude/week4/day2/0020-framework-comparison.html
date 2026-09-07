@@ -88,7 +88,10 @@ g.add_node("classify", classify)
 g.add_node("ask_clarify", ask_clarify)
 g.add_conditional_edges("classify", route)     # route() picks the next node
 g.add_edge("ask_clarify", "classify")          # &lt;-- backwards
-result = g.compile(checkpointer=pg).invoke(state, thread_id=case_id)</div>
+result = g.compile(checkpointer=pg).invoke(
+    state,
+    config={"configurable": {"thread_id": case_id}},
+)</div>
 
 <div class="code-inline"># CREW — specialists with roles, talking to each other
 classifier = Agent(role="Intent classifier", goal="...")
@@ -248,13 +251,58 @@ Crews mirror how a human team works, and that intuition is exactly what makes th
   </div>
 </div>
 
-<h2>7. Companion Script</h2>
+<h2>7. Lab: Compare Runtime Shape, Not Marketing Features</h2>
+
+<p><code>framework_shapes_lab.py</code> runs the same deterministic refund request through four implementations. The point is not to benchmark vendors: it is to make <strong>routing ownership</strong>, backward edges, and change cost visible in a trace you can test.</p>
+
+<table class="matrix-table">
+  <tr><th>Shape</th><th>Who owns routing?</th><th>What an ambiguous request does</th></tr>
+  <tr><td><strong>Raw</strong></td><td>Your application loop</td><td>Appends a clarification and classifies again. Flexible, but you own termination, persistence, and recovery.</td></tr>
+  <tr><td><strong>Chain</strong></td><td>The fixed pipeline</td><td>Cannot go backward; the lab deliberately exposes the bad fallback: it guesses a refund.</td></tr>
+  <tr><td><strong>Graph</strong></td><td>Declared conditional edges</td><td>Traverses <code>classify → ask_clarify → classify → handle_track</code>. The trace is an inspectable fact.</td></tr>
+  <tr><td><strong>Crew shape</strong></td><td>A coordinator simulation</td><td>Delegates to specialists. This is intentionally a structural simulation, not a CrewAI/AutoGen benchmark.</td></tr>
+</table>
+
+<table class="matrix-table">
+  <tr><th>Observable</th><th>Raw</th><th>Chain</th><th>Graph</th><th>Crew shape</th></tr>
+  <tr><td><strong>Loop exit</strong></td><td>Code in the application loop</td><td>No loop</td><td>Conditional edge plus guard</td><td>Coordinator/stopping policy</td></tr>
+  <tr><td><strong>Pause/resume readiness</strong></td><td>Must design persistence protocol</td><td>Requires a new control-flow boundary</td><td>Compile with a checkpointer and stable thread ID</td><td>Depends on coordinator/runtime</td></tr>
+  <tr><td><strong>Trace shape</strong></td><td>Whatever the app records</td><td>One forward list</td><td>Named nodes and traversed edges</td><td>Delegation/conversation events</td></tr>
+  <tr><td><strong>Approval change surface</strong></td><td>Loop, state, persistence, callback</td><td>Pipeline must become resumable</td><td>Approval node and two routes</td><td>Coordinator plus durable callback contract</td></tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day2
+python framework_shapes_lab.py --approach graph \
+  --request "this isn't what I expected" --trace
+
+approach: graph
+routing:  declared conditional edges
+decision: SENT_TRACKING
+path:     classify -> ask_clarify -> classify -> handle_track</div>
+
+<h3>Run the change, not just the happy path</h3>
+<p>Add <code>--require-approval</code> to a refund request. Raw code needs another branch in the loop, the chain can return a pending label but still cannot durably pause, and the graph gains an explicit approval edge. That distinction is why <strong>same output does not mean same architecture</strong>.</p>
+
+<div class="plain">
+<div class="label">What the tests hold constant</div>
+All four shapes use the same deterministic intent rules and order data. The tests vary only the control-flow requirement, assert the resulting path, and name who owns routing. That keeps the lab honest: it compares orchestration shape, not model quality, prompts, or vendor performance.
+</div>
+
+<h2>8. Companion Scripts</h2>
 
 <table class="matrix-table">
   <tr><th>Script</th><th>What it does</th></tr>
   <tr>
     <td><code>week4/day2/framework_chooser.py</code></td>
     <td>Shows the same agent in all four shapes, applies the four requirement changes, and scores the damage (edit=0, bolt-on=1, rewrite=3). <code>--decide</code> turns it into a chooser over your own answers, and reports <em>what would change the recommendation</em>.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day2/framework_shapes_lab.py</code></td>
+    <td>Executes one deterministic workflow as raw loop, fixed chain, real LangGraph state graph, and coordinator/crew simulation. Use <code>--trace</code> to inspect the actual path.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day2/test_framework_shapes_lab.py</code></td>
+    <td>Regression tests for clarification, approval change, path visibility, and routing ownership.</td>
   </tr>
 </table>
 
@@ -263,9 +311,11 @@ python framework_chooser.py                    # the four shapes and the damage 
 python framework_chooser.py --show-code        # just the code shapes
 python framework_chooser.py --decide --loops 0 --specialists 1        # -> RAW
 python framework_chooser.py --decide --loops 2 --human-approval       # -> GRAPH
-python framework_chooser.py --decide --specialists 3 --team 3         # -> CREW, with a caution</div>
+python framework_chooser.py --decide --specialists 3 --team 3         # -> CREW, with a caution
+python framework_shapes_lab.py --approach graph --trace
+python -m unittest test_framework_shapes_lab.py -v</div>
 
-<h2>8. Interactive Assessment Quiz</h2>
+<h2>9. Interactive Assessment Quiz</h2>
 
 <div class="quiz-container">
 <h3>Framework Check</h3>

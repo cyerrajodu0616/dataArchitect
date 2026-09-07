@@ -65,13 +65,13 @@
   PRIMARY KEY (thread_id, step)
 );
 
--- "resume the run" is this, and only this:
+-- a useful mental model for locating the latest saved state:
 SELECT node, state FROM agent_checkpoint
  WHERE thread_id = :id ORDER BY step DESC LIMIT 1;</div>
 
 <div class="anchor">
-<div class="label">That's the whole checkpointer</div>
-A write after each node, and a <code>SELECT ... ORDER BY step DESC LIMIT 1</code> to resume. Day 3's <code>thread_id</code> is just the primary key. Once you've seen this, "the framework handles durable resumption for you" stops sounding like magic and starts sounding like <em>a table you didn't have to write</em> — which is the correct amount of credit to give it.
+<div class="label">That's the minimum mental model, not the whole checkpointer</div>
+A durable implementation stores checkpoint identity, channel/version metadata, pending writes, parent relationships, configuration, and serialization data in addition to user state. <code>thread_id</code> selects a checkpoint history; it is not necessarily the table's sole primary key. The simplified query explains the persistence idea, while the framework also handles consistent snapshots and resumption protocol.
 </div>
 
 <h2>2. The Estimate Everyone Makes, and Why It's Wrong</h2>
@@ -81,7 +81,7 @@ A write after each node, and a <code>SELECT ... ORDER BY step DESC LIMIT 1</code
 <div class="plain">
 <div class="label">In plain words</div>
 <p><strong>The state grows as the run goes on.</strong> Step 1's state is a question. Step 12's state is a question plus eleven tool results plus the whole message history.</p>
-<p style="margin-bottom:0;">So if you save the <em>entire</em> state at every step, you're not writing the same size N times. You're writing 1, then 2, then 3… and the total is <code>1+2+3+…+N</code>.</p>
+<p style="margin-bottom:0;">So if you save the <em>entire</em> ever-growing state at every step, you're not writing the same size N times. You're writing 1, then 2, then 3… and the total is <code>1+2+3+…+N</code>. This is a sizing model, not a promise about every checkpointer's physical encoding or compression.</p>
 </div>
 
 <div class="math-box">total bytes per run = N(N+1)/2 &#215; growth &nbsp;&#8594;&nbsp; <strong>quadratic in step count</strong></div>
@@ -168,7 +168,7 @@ Day 4 said fewer nodes because <strong>reliability multiplies</strong>. Today sa
     <td>1</td>
     <td class="yes"><strong>Trim the state</strong> — stop storing raw tool output nobody re-reads</td>
     <td>~65% reduction</td>
-    <td class="yes"><strong>Nothing.</strong> And it shrinks everything downstream: write rate, WAL, replication, backup, and the prompt if that state is being passed to the model.</td>
+    <td class="yes">Usually low cost, but retain the inputs needed for replay, audit, and debugging. It shrinks write rate, WAL, replication, backup, and the prompt if that state is passed to the model.</td>
   </tr>
   <tr>
     <td>2</td>
@@ -187,7 +187,7 @@ Day 4 said fewer nodes because <strong>reliability multiplies</strong>. Today sa
 <div class="caution">
 <div class="label">Why trimming comes first, and why it's usually skipped</div>
 Most agent state is <strong>raw tool responses</strong> — the full JSON from an order lookup when the agent needed three fields. Storing the whole payload is the default because it's easier, and it's the single biggest contributor to both the base size and the growth rate.
-<p style="margin-top:0.7rem;margin-bottom:0;">It's free to fix and it compounds: the same trim reduces storage, write volume, WAL, replication lag, restore time, <em>and</em> — if that state is being serialised into prompts — token cost. It's the only lever on this page with no downside, which is exactly why it's worth doing before the clever one.</p>
+<p style="margin-top:0.7rem;margin-bottom:0;">It usually compounds: the same trim reduces storage, write volume, WAL, replication lag, restore time, <em>and</em> — if that state is being serialised into prompts — token cost. The constraint is evidence: preserve normalized decision inputs, hashes or references required for audit, and enough context to replay safely.</p>
 </div>
 
 <h2>4. Does It Belong in Postgres?</h2>
@@ -196,14 +196,14 @@ Most agent state is <strong>raw tool responses</strong> — the full JSON from a
 
 <div class="verdict">
 <div class="label">The transactional argument</div>
-The checkpoint and the business record it refers to live in the same database, so <strong>"refund issued" and "agent state says refund issued" can be written in one transaction.</strong>
-<p style="margin-top:0.7rem;margin-bottom:0;">Split them across two systems and you've re-created the <strong>dual-write problem</strong> from Week 2 Day 2 — same drift, except now the drift is between <em>an action and the record of it</em>. That's a much worse thing to be inconsistent about than a stale search index.</p>
+Co-locating checkpoints and business records in Postgres <strong>makes a single-transaction design possible only when your integration deliberately writes both through the same database transaction.</strong> A framework checkpointer and a separate business call do not become atomic merely because both use Postgres.
+<p style="margin-top:0.7rem;margin-bottom:0;">If the side effect is external, use its idempotency protocol plus an outbox/inbox or reconciliation path. Splitting state across systems adds coordination work, but co-location alone does not remove the dual-write problem.</p>
 </div>
 
 <table class="matrix-table">
   <tr><th>Concern</th><th>Postgres</th><th>Redis (or a dedicated store)</th></tr>
   <tr><td><strong>Write rate</strong></td><td>Retail checkpoints are <strong>12/sec peak against 2,400/sec</strong> of existing OLTP — 0.5%. Noise.</td><td>Solves a problem you don't have at this rate.</td></tr>
-  <tr><td><strong>Transactionality</strong></td><td class="yes">Action and checkpoint commit together.</td><td class="no">Two systems, two writes, drift.</td></tr>
+  <tr><td><strong>Transactionality</strong></td><td class="yes">Can share a transaction with local business writes if the application integrates them that way.</td><td class="no">Requires an explicit cross-system consistency protocol.</td></tr>
   <tr><td><strong>Backup / restore</strong></td><td class="yes">One restore. Business data and agent state come back consistent.</td><td class="no">A restore that recovers business data but not agent state leaves in-flight runs pointing at rows that moved.</td></tr>
   <tr><td><strong>Audit</strong></td><td class="yes">For insurance the checkpoint history <em>is</em> the audit trail — same artifact, same lifecycle.</td><td>Separate retention, separate compliance story.</td></tr>
   <tr><td><strong>Latency</strong></td><td>A few ms per write.</td><td class="partial">Faster — matters only if state is large, hot, and read every step.</td></tr>
@@ -244,7 +244,63 @@ If retention is short, <strong>partition by <code>created_at</code></strong> and
   </div>
 </div>
 
-<h2>6. Companion Script</h2>
+<h2>6. Lab: Treat a Checkpoint as a Lifecycle</h2>
+
+<p><code>checkpoint_lifecycle_lab.py</code> uses a real LangGraph <code>InMemorySaver</code> to inspect checkpoint history, then models the production controls a storage backend must enforce. <code>InMemorySaver</code> is intentionally for tests and local exploration; a production deployment needs a durable saver such as Postgres.</p>
+
+<table class="matrix-table">
+  <tr><th>Lifecycle concern</th><th>Invariant</th></tr>
+  <tr><td><strong>Identity and isolation</strong></td><td>Every invocation uses <code>configurable.thread_id</code>; histories for different threads never merge.</td></tr>
+  <tr><td><strong>Lease ownership</strong></td><td>Only one worker may resume a checkpoint version while its lease is live.</td></tr>
+  <tr><td><strong>Optimistic version</strong></td><td>A stale worker cannot overwrite state produced by a newer resume.</td></tr>
+  <tr><td><strong>Lease expiry</strong></td><td>A crashed worker does not lock the run forever; another worker may take over after TTL.</td></tr>
+  <tr><td><strong>Terminal protection</strong></td><td>Completed or rejected runs cannot be resumed into a second side effect.</td></tr>
+  <tr><td><strong>Schema migration</strong></td><td>Old state is upgraded explicitly before new node code reads it.</td></tr>
+  <tr><td><strong>State minimization</strong></td><td>Keep decision inputs and references; remove raw payloads and direct PII only when replay/audit obligations remain satisfied.</td></tr>
+</table>
+
+<h3>From test saver to production saver</h3>
+<div class="code-inline"># InMemorySaver is for deterministic tests only.
+# Production requires the separate Postgres checkpoint package.
+from langgraph.checkpoint.postgres import PostgresSaver
+
+with PostgresSaver.from_conn_string(DB_URI) as saver:
+    saver.setup()  # one-time schema setup; run as a controlled migration
+    app = graph.compile(checkpointer=saver)
+    config = {"configurable": {"thread_id": case_id}}
+    app.invoke(input_state, config=config)
+    latest = app.get_state(config)
+    history = list(app.get_state_history(config))</div>
+
+<h3>Two workers resume one approval</h3>
+<div class="code-inline">checkpoint version 7 is READY
+worker A: compare version=7, acquire lease  ---- wins; status RUNNING
+worker B: compare version=7, acquire lease  ---- rejected; lease is live
+worker A: execute, save version 8, release  ---- status TERMINAL
+worker B: retry after refresh                ---- rejected; terminal state
+
+The compare-and-set, lease, business idempotency record, and terminal write
+must be enforced atomically by the durable store—not by an in-process dict.</div>
+
+<table class="matrix-table">
+  <tr><th>Production operation</th><th>Required decision or signal</th></tr>
+  <tr><td><strong>Serializer safety</strong></td><td>Use an allow-listed format; do not deserialize attacker-controlled executable objects.</td></tr>
+  <tr><td><strong>PII and encryption</strong></td><td>Minimize direct identifiers, encrypt in transit and at rest, control key access, and preserve audit references.</td></tr>
+  <tr><td><strong>Retention</strong></td><td>Partition by creation time where appropriate; expire only after legal, replay, and incident needs are met.</td></tr>
+  <tr><td><strong>Restore drill</strong></td><td>Restore checkpoint and business timelines together, then resume test threads without repeating side effects.</td></tr>
+  <tr><td><strong>Observability</strong></td><td>Measure save/load latency, checkpoint bytes, pending age, lease conflicts, stale resumes, migration failures, and restore success.</td></tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day5
+python checkpoint_lifecycle_lab.py --thread-id demo-1
+python -m unittest test_checkpoint_lifecycle_lab.py -v</div>
+
+<div class="caution">
+<div class="label">Deploys change stored data contracts</div>
+A multi-day run may resume under code that did not create its checkpoint. Version state schemas, make migrations deterministic and backward-compatible, and test at least the oldest still-retained version. A deploy without a checkpoint migration plan is a data migration without a plan.
+</div>
+
+<h2>7. Companion Scripts</h2>
 
 <table class="matrix-table">
   <tr><th>Script</th><th>What it does</th></tr>
@@ -252,15 +308,25 @@ If retention is short, <strong>partition by <code>created_at</code></strong> and
     <td><code>week4/day5/checkpoint_sizing.py</code></td>
     <td>Computes checkpoint write rate <em>as a share of existing OLTP load</em>, storage under the naive linear model against the real quadratic one, what each of the three levers is worth in GB and dollars, and whether Postgres is the right home using the ADR-002 reasoning. <code>--domain</code>, <code>--steps</code>, <code>--growth-kb</code>, <code>--retain-days</code>.</td>
   </tr>
+  <tr>
+    <td><code>week4/day5/checkpoint_lifecycle_lab.py</code></td>
+    <td>Inspects real checkpoint history and models thread isolation, lease ownership, optimistic versions, takeover after expiry, terminal-state guards, migration, and safe trimming.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day5/test_checkpoint_lifecycle_lab.py</code></td>
+    <td>Nine tests covering continuation, isolation, checkpoint history, concurrency, stale workers, migration, trimming, and terminal protection.</td>
+  </tr>
 </table>
 
 <div class="code-inline">cd Claude/week4/day5
 python checkpoint_sizing.py --domain retail      # write rate is 0.5% of OLTP
 python checkpoint_sizing.py --domain insurance   # 7-year retention, 458 GB vs 57 GB
 python checkpoint_sizing.py --steps 20           # watch the quadratic bite
-python checkpoint_sizing.py --retain-days 7      # what retention alone buys</div>
+python checkpoint_sizing.py --retain-days 7      # what retention alone buys
+python checkpoint_lifecycle_lab.py --thread-id demo-1
+python -m unittest test_checkpoint_lifecycle_lab.py -v</div>
 
-<h2>7. Interactive Assessment Quiz</h2>
+<h2>8. Interactive Assessment Quiz</h2>
 
 <div class="quiz-container">
 <h3>State Persistence Check</h3>
@@ -277,7 +343,7 @@ python checkpoint_sizing.py --retain-days 7      # what retention alone buys</di
 <div class="quiz">
 <div class="q">2. Which lever should you pull first, and why?</div>
 <button data-correct="false">Shorter retention — it's a single config change with immediate effect.</button>
-<button data-correct="true">Trim the state. Most agent state is raw tool responses nobody re-reads, it's free to fix, and it shrinks everything downstream at once — storage, write rate, WAL, replication, restore time, and prompt tokens if the state is serialised into prompts. It's the only lever with no downside.</button>
+<button data-correct="true">Trim the state first, while retaining normalized decision inputs and references needed for replay and audit. Raw tool payloads often dominate size, so careful minimization shrinks storage, write rate, WAL, replication, restore time, and sometimes prompt tokens.</button>
 <button data-correct="false">Delta checkpoints — the biggest single reduction, 113 GB to 29 GB.</button>
 <button data-correct="false">Move to Redis, which removes the storage cost from Postgres entirely.</button>
 <div class="feedback"></div>
@@ -286,7 +352,7 @@ python checkpoint_sizing.py --retain-days 7      # what retention alone buys</di
 <div class="quiz">
 <div class="q">3. What's the strongest argument for keeping checkpoints in Postgres rather than Redis?</div>
 <button data-correct="false">Postgres storage is cheaper per GB than in-memory storage.</button>
-<button data-correct="true">Transactionality. The checkpoint and the business record it refers to are in the same database, so "refund issued" and "agent state says refund issued" commit together. Split them and you've re-created the Week 2 dual-write problem — with drift now between an action and the record of it.</button>
+<button data-correct="true">Co-location gives you the option to use one transaction for local business writes and checkpoint state, but only with deliberate integration through that transaction. External side effects still need idempotency plus outbox/inbox or reconciliation; using Postgres for both stores is not automatically atomic.</button>
 <button data-correct="false">Redis can't store JSON documents of the size agent state requires.</button>
 <button data-correct="false">Postgres offers better write throughput for append-only workloads.</button>
 <div class="feedback"></div>

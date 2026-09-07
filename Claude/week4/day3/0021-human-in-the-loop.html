@@ -104,8 +104,9 @@ Threshold too <strong>low</strong> → the queue floods, reviewers rubber-stamp,
           $323       173      173      1.1    92%        389     198,967     199,356    0.8d
         $1,165         0        0      0.0    92%          1     201,588     201,588    0.0d
 
-  ! = routed more than the team can physically read; the excess is
-      auto-approved on a timeout with no scrutiny at all</div>
+  ! = routed more than the team can physically read; this economic model
+      exposes the loss under a deliberately unsafe fail-open timeout policy.
+      Production approval gates should expire fail-closed.</div>
 
 <svg viewBox="0 0 760 290" width="100%" style="max-width:760px;display:block;margin:1.6rem auto;background:#f9f7f4;border:1px solid #e2ded8;border-radius:9px;">
   <text x="24" y="26" font-family="-apple-system,sans-serif" font-size="13" font-weight="700" fill="#1f5f8b">THE U-SHAPE &#8212; RETAIL REFUND APPROVALS</text>
@@ -158,7 +159,7 @@ Threshold too <strong>low</strong> → the queue floods, reviewers rubber-stamp,
 
 <div class="caution">
 <div class="label">The finding to carry into an interview</div>
-<strong>"Review everything" is not the safe default.</strong> Two reviewers can physically process 6,400 items a month. Route them 120,000 and <strong>113,600 are auto-approved on a timeout</strong> — and the 6,400 that <em>are</em> seen arrive at 40/hour, where the catch rate has already fallen to 25%.
+<strong>"Review everything" is not automatically safe.</strong> Two reviewers can physically process 6,400 items a month. Route them 120,000 and 113,600 exceed capacity. The model prices those as auto-approved only to expose how dangerous a <strong>fail-open timeout policy</strong> would be; production should expire the requests fail-closed. The 6,400 that <em>are</em> seen arrive at 40/hour, where the catch rate has already fallen to 25%.
 <p style="margin-top:0.7rem;margin-bottom:0;">And the failure is <em>invisible</em>: the approvals all come back signed. Every dashboard shows 100% of high-value actions reviewed. It looks like the strongest possible control right up until someone audits what the reviewers actually caught. This is an expensive way to convert a real control into a theatrical one.</p>
 </div>
 
@@ -174,8 +175,8 @@ Threshold too <strong>low</strong> → the queue floods, reviewers rubber-stamp,
 
   THE OPTIMUM IS SET BY STAFFING, NOT BY VALUE. At $16,937 the queue is
   1,099/month against a capacity of 1,152. Lower the threshold by one step
-  and the queue overflows — the excess gets approved on a timeout with no
-  scrutiny at all.</div>
+  and the queue overflows. A fail-closed system blocks or rejects the excess;
+  the model's fail-open comparison shows why silent approval is unacceptable.</div>
 
 <div class="verdict">
 <div class="label">The threshold isn't really the decision</div>
@@ -230,23 +231,35 @@ The optimum sits <em>exactly</em> at the capacity line: 1,099 routed against 1,1
 <p style="margin-bottom:0;">So the agent has to: save everything it knows, exit completely, and later — in a <em>different process, on a different machine, possibly after a deploy</em> — pick up at exactly the node it stopped at, with the same state.</p>
 </div>
 
-<div class="code-inline"># LangGraph: stop before a node, resume later by thread id
-app = graph.compile(
-    checkpointer=PostgresSaver(conn),      # state saved after every node
-    interrupt_before=["execute_refund"],   # stop here, always
-)
+<div class="code-inline"># LangGraph: interrupt inside the approval node, resume with a value
+from langgraph.types import Command, interrupt
+
+def request_approval(state):
+    response = interrupt({
+        "case_id": state["case_id"],
+        "amount": state["amount"],
+        "state_version": state["state_version"],
+        "allowed_actions": ["approve", "reject", "edit"],
+    })
+    return {"approval_status": response["status"]}
+
+app = graph.compile(checkpointer=checkpointer)
+config = {"configurable": {"thread_id": case_id}}
 
 # turn 1 — runs until it hits the gate, then returns
-app.invoke({"request": msg}, config={"configurable": {"thread_id": case_id}})
+paused = app.invoke({"request": msg}, config=config)
 
 # ... three days pass. The pod restarts twice. There is a deploy.
 
-# turn 2 — resumes at execute_refund with the state it had
-app.invoke(None, config={"configurable": {"thread_id": case_id}})</div>
+# turn 2 — the application validates actor, expiry and state version first
+result = app.invoke(
+    Command(resume={"status": "APPROVED", "actor": reviewer_id}),
+    config=config,
+)</div>
 
 <div class="anchor">
 <div class="label">The thing to notice</div>
-<code>thread_id</code> is doing all the work — it's the primary key of a durable row holding the whole state. Resuming is a <code>SELECT</code>, not magic.
+<code>thread_id</code> correlates this invocation with its checkpoint history; the checkpointer owns the actual storage layout and checkpoint identifiers. Resuming loads durable state and applies a <code>Command(resume=...)</code> value — it is persistence plus protocol, not magic.
 <p style="margin-top:0.7rem;margin-bottom:0;">Which is exactly why Day 2's damage table scored "pause for a human" and "survive a crash" identically: <strong>they're the same requirement.</strong> Both need durable state resumable at an exact node. Day 5 sizes what that costs in Postgres.</p>
 </div>
 
@@ -297,13 +310,53 @@ app.invoke(None, config={"configurable": {"thread_id": case_id}})</div>
   </tr>
 </table>
 
-<h2>9. Companion Script</h2>
+<h2>9. The Approval Boundary Is More Than a Pause</h2>
+
+<p>The graph knows <em>where</em> to pause. Your application must still decide <em>who</em> may respond and whether the response is still valid. Treat the callback like a state-changing API endpoint, because that is exactly what it is.</p>
+
+<div class="code-inline">PENDING --valid approve/edit--> APPROVED
+PENDING --valid reject------> REJECTED
+PENDING --deadline reached--> EXPIRED
+PENDING --version changed----> STALE
+
+APPROVED | REJECTED | EXPIRED | STALE --any response--> no transition
+                                                     audit duplicate/ignored</div>
+
+<table class="matrix-table">
+  <tr><th>Check</th><th>Failure it prevents</th><th>Fail-closed result</th></tr>
+  <tr><td><strong>Authorization</strong></td><td>A signed-in but unqualified user approves a refund.</td><td>Reject the callback; audit <code>UNAUTHORIZED</code>.</td></tr>
+  <tr><td><strong>Expiry</strong></td><td>A days-old approval executes against changed business conditions.</td><td>Resume with <code>EXPIRED</code>; never execute the side effect.</td></tr>
+  <tr><td><strong>Expected version</strong></td><td>The reviewer acts on stale amount or policy data.</td><td>Resume with <code>STALE</code> and request a fresh review.</td></tr>
+  <tr><td><strong>Terminal-state guard</strong></td><td>Double-clicks or two reviewers resume the same case twice.</td><td>The first valid response wins; later responses are audited and ignored.</td></tr>
+  <tr><td><strong>Immutable audit event</strong></td><td>You can show the final answer but not who authorized it.</td><td>Record actor, action, version, timestamp, and reason.</td></tr>
+</table>
+
+<div class="caution">
+<div class="label">Interrupt replay rule</div>
+When a LangGraph interrupt resumes, the interrupted node starts again from its beginning. Any work performed before <code>interrupt()</code> can therefore run more than once. Keep pre-interrupt work pure, or make it idempotent; put irreversible effects only after the validated approval branch.
+</div>
+
+<div class="code-inline">cd Claude/week4/day3
+python approval_interrupt_lab.py --action approve
+python approval_interrupt_lab.py --action edit
+python approval_interrupt_lab.py --action expire
+python -m unittest test_approval_interrupt_lab.py -v</div>
+
+<h2>10. Companion Scripts</h2>
 
 <table class="matrix-table">
   <tr><th>Script</th><th>What it does</th></tr>
   <tr>
     <td><code>week4/day3/approval_economics.py</code></td>
     <td>Sweeps the approval threshold and prices each one — review cost, expected loss from missed errors, total — with a <strong>reviewer-fatigue model</strong> so catch rate falls as the queue grows, and a <strong>hard capacity constraint</strong> so you can't buy review you haven't staffed. Reports the naive textbook threshold beside the real optimum. <code>--domain</code>, <code>--error-rate</code>, <code>--review-minutes</code>, <code>--reviewers</code>, <code>--no-fatigue</code>.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day3/approval_interrupt_lab.py</code></td>
+    <td>Runs a real LangGraph <code>interrupt()</code>/<code>Command(resume=...)</code> lifecycle with authorization, expiry, optimistic state version, edit/reject paths, duplicate suppression, and audit events.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day3/test_approval_interrupt_lab.py</code></td>
+    <td>Ten deterministic tests, including stale review, concurrent response, fail-closed expiry, and same-thread resume.</td>
   </tr>
 </table>
 
@@ -312,14 +365,16 @@ python approval_economics.py --domain retail       # U-shape; review 1.5%
 python approval_economics.py --domain insurance    # optimum set by staffing
 python approval_economics.py --domain fintech      # queue latency is the constraint
 python approval_economics.py --no-fatigue          # the naive model, for contrast
-python approval_economics.py --domain insurance --reviewers 6   # staff up, then re-solve</div>
+python approval_economics.py --domain insurance --reviewers 6   # staff up, then re-solve
+python approval_interrupt_lab.py --action approve
+python -m unittest test_approval_interrupt_lab.py -v</div>
 
 <div class="trythis">
 <div class="label">Try this</div>
 Run insurance with <code>--reviewers 6</code> and watch the optimal threshold move. That's the point of the whole lesson in one command: <strong>the threshold is an output of your staffing, not an independent decision.</strong>
 </div>
 
-<h2>10. Interactive Assessment Quiz</h2>
+<h2>11. Interactive Assessment Quiz</h2>
 
 <div class="quiz-container">
 <h3>Human-in-the-Loop Check</h3>

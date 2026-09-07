@@ -47,9 +47,9 @@
 <div class="plain">
 <div class="label">Start with the arithmetic that surprises people</div>
 <p>A step that works <strong>99%</strong> of the time is a good step.</p>
-<p>Six of them in a row work <code>0.99<sup>6</sup></code> = <strong>94.1%</strong> of the time.<br>
+<p>If their failures are independent and every step is required, six in a row work <code>0.99<sup>6</sup></code> = <strong>94.1%</strong> of the time.<br>
 Twelve work <strong>88.6%</strong>. Twenty work <strong>81.8%</strong>.</p>
-<p style="margin-bottom:0;">Nothing went wrong. <strong>Reliability multiplies along a path</strong>, so adding steps makes an agent less reliable even when every single step is excellent.</p>
+<p style="margin-bottom:0;">Under that model, <strong>reliability multiplies along a required path</strong>. Real failures may be correlated, optional branches are weighted by traffic, and retries change the effective step probabilities, so use the product as a baseline rather than an SLO forecast.</p>
 </div>
 
 <div class="anchor">
@@ -139,6 +139,7 @@ The first retry buys a lot: 94.1% → 98.5%. The second and third buy <strong>es
 <div class="verdict">
 <div class="label">The retry that's actually worth building</div>
 <strong>Retry with the error fed back in.</strong> A blind retry of a malformed-output failure re-rolls the dice; a retry that says <em>"that failed schema validation: <code>days_since_delivery</code> must be an integer"</em> usually succeeds first time. It costs one extra sentence in the prompt and converts a coin flip into a fix.
+<p style="margin-top:0.7rem;margin-bottom:0;">Operationally, this is a <strong>new model attempt with validation feedback</strong>, not a transport retry of the same request. Track it separately: it consumes model budget, may change semantics, and still needs a hard attempt limit.</p>
 </div>
 
 <h2>4. The Ambiguous Failure, and Why Retries Make Things Worse</h2>
@@ -147,7 +148,7 @@ The first retry buys a lot: 94.1% → 98.5%. The second and third buy <strong>es
 <div class="label">The scenario, in plain words</div>
 <p>Your agent calls the refund API. The connection drops before the response comes back.</p>
 <p><strong>Did the refund go out?</strong> You genuinely don't know.</p>
-<p style="margin-bottom:0;">Retry, and you might refund them twice. Don't retry, and you might have refunded nobody. Neither choice is safe — <em>without an idempotency key</em>. With one, both are.</p>
+<p style="margin-bottom:0;">Retry, and you might refund them twice. Don't retry, and you might have refunded nobody. Neither choice is safe without an idempotency key. With a receiver-enforced key, stable payload, atomic key/result storage, and a defined retention window, retry becomes safe against duplicate execution.</p>
 </div>
 
 <div class="code-inline">python reliability_math.py --domain insurance
@@ -275,7 +276,38 @@ Day 3's approval model priced errors one at a time and explicitly couldn't handl
   <tr><td>6</td><td><strong>A dead-letter path</strong> with state attached.</td><td>Some runs won't succeed. They need somewhere a human looks, and the state must be there so the run can be <em>resumed</em> rather than restarted from scratch.</td></tr>
 </table>
 
-<h2>8. Companion Script</h2>
+<h2>8. Lab: Build a Reliability Boundary</h2>
+
+<p><code>resilient_refund_lab.py</code> puts the production controls around one side effect. The important design move is that the retry loop does not own business correctness by itself: classification, receiver-side deduplication, breaker state, telemetry, and dead-letter replay are separate responsibilities.</p>
+
+<div class="code-inline">idempotency record: ABSENT -> STARTED -> COMPLETED(result)
+same key + same fingerprint while STARTED   -> retry later / in progress
+same key + same fingerprint when COMPLETED -> return stored result
+same key + different fingerprint            -> reject as a conflict</div>
+
+<table class="matrix-table">
+  <tr><th>Boundary stage</th><th>Invariant</th><th>Evidence emitted</th></tr>
+  <tr><td><strong>Classify</strong></td><td>Permanent failures never enter the retry loop; transient and ambiguous failures may.</td><td>Failure kind on every attempt.</td></tr>
+  <tr><td><strong>Idempotent receiver</strong></td><td>The same key and payload return the original result; the same key with a different payload is rejected.</td><td><code>deduplicated=true</code> on replay.</td></tr>
+  <tr><td><strong>Retry with full jitter</strong></td><td>Attempts are bounded and delays are spread inside the exponential window.</td><td>Attempt number and selected delay.</td></tr>
+  <tr><td><strong>Attempt deadline</strong></td><td>One slow call cannot consume the entire run budget; deadline failures enter the typed retry policy.</td><td>Per-attempt duration, deadline, and remaining budget.</td></tr>
+  <tr><td><strong>Circuit breaker</strong></td><td>Closed → open after the threshold; open → half-open after cooldown; one success closes it.</td><td>State transition and failure count.</td></tr>
+  <tr><td><strong>Dead-letter path</strong></td><td>Exhausted work keeps its key, payload, failure kind, attempt count, and last error.</td><td>A replayable record, not a log string.</td></tr>
+</table>
+
+<div class="code-inline">cd Claude/week4/day4
+python resilient_refund_lab.py --failure ambiguous
+
+# The first call commits and loses its response. The retry reuses the key,
+# receives the stored result, and side_effects remains 1.
+python -m unittest test_resilient_refund_lab.py -v</div>
+
+<div class="caution">
+<div class="label">What an idempotency key does not guarantee</div>
+It does not make an arbitrary client safe by itself. The receiver must enforce uniqueness and persist the key, request fingerprint, and result atomically with the side effect. Define key scope and retention, reject payload conflicts, and preserve the original key when replaying a dead letter.
+</div>
+
+<h2>9. Companion Scripts</h2>
 
 <table class="matrix-table">
   <tr><th>Script</th><th>What it does</th></tr>
@@ -283,15 +315,25 @@ Day 3's approval model priced errors one at a time and explicitly couldn't handl
     <td><code>week4/day4/reliability_math.py</code></td>
     <td>Computes end-to-end success against step count, what retries buy back and the ceiling permanent failures impose, an <strong>idempotency simulation</strong> counting duplicate side effects and their dollar cost, and the retry-storm arithmetic showing why backoff without jitter doesn't help. <code>--domain</code>, <code>--steps</code>, <code>--step-success</code>, <code>--transient-share</code>.</td>
   </tr>
+  <tr>
+    <td><code>week4/day4/resilient_refund_lab.py</code></td>
+    <td>Executable transient/permanent/ambiguous classification, receiver-side idempotency, bounded full-jitter retries, circuit-breaker transitions, telemetry, and dead-letter replay.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day4/test_resilient_refund_lab.py</code></td>
+    <td>Fourteen tests for ambiguous commits, concurrent duplicate calls, payload conflicts, permanent failures, attempt deadlines, injected jitter/sleep, model-output repair feedback, breaker lifecycle, correlated outages, DLQ contents, replay, and the limits of the independence model.</td>
+  </tr>
 </table>
 
 <div class="code-inline">cd Claude/week4/day4
 python reliability_math.py --domain retail       # 6 steps, 76k failed runs/mo
 python reliability_math.py --domain insurance    # 14 steps -> 81%, $67k of duplicates
 python reliability_math.py --steps 20            # what a 20-node graph costs you
-python reliability_math.py --transient-share 0.95   # if you could classify perfectly</div>
+python reliability_math.py --transient-share 0.95   # if you could classify perfectly
+python resilient_refund_lab.py --failure ambiguous
+python -m unittest test_resilient_refund_lab.py -v</div>
 
-<h2>9. Interactive Assessment Quiz</h2>
+<h2>10. Interactive Assessment Quiz</h2>
 
 <div class="quiz-container">
 <h3>Error Handling Check</h3>
@@ -318,7 +360,7 @@ python reliability_math.py --transient-share 0.95   # if you could classify perf
 <div class="q">3. Your agent calls the refund API and the connection drops before the response. What's the right response?</div>
 <button data-correct="false">Retry — a dropped connection is transient by definition.</button>
 <button data-correct="false">Don't retry — you might double-refund, and a missed refund is recoverable.</button>
-<button data-correct="true">Neither is safe without an idempotency key, and both are safe with one. The key makes the retry a no-op if the first call landed, and a real call if it didn't — which is why keys go in <em>before</em> retries, not after.</button>
+<button data-correct="true">Neither is safe without an idempotency protocol. Reuse one logical-operation key; at the receiver, atomically store its request fingerprint and result with the side effect. Then a retry returns the original result if the first call landed, and performs the call if it did not — which is why this ships <em>before</em> retries.</button>
 <button data-correct="false">Query the payments API to check whether the refund exists, then decide.</button>
 <div class="feedback"></div>
 </div>

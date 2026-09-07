@@ -245,7 +245,7 @@ Graph: <strong>SENT_TRACKING</strong> — sent its own question first, then aske
 
 <div class="trythis">
 <div class="label">Try this</div>
-Run <code>python state_machine_trace.py</code> and read the trace next to the source. The whole engine is about 40 lines at the top of the file — <code>nodes</code>, <code>edges</code>, <code>branches</code>, and a <code>while</code> loop. There is nothing else in it. That is genuinely what LangGraph is, before it adds checkpointing and a nicer API.
+Run <code>python state_machine_trace.py</code> and read the trace next to the source. Its 40-line engine exposes the execution core LangGraph builds on: nodes, edges, branches, and a loop. The real runtime adds important semantics around that core — declared state merging, topology validation, super-step scheduling, event streaming, runtime limits, and persistence integration. Section 7 builds the same agent with those real APIs.
 </div>
 
 <h2>4. The Trap Everybody Hits First</h2>
@@ -280,16 +280,16 @@ It's a retry loop with a max-attempt count, and you'd never ship one without the
 <table class="matrix-table">
   <tr><th>If your workflow…</th><th>Use</th><th>Why</th></tr>
   <tr><td>Always runs the same steps in the same order</td><td class="yes"><strong>A chain, or plain functions</strong></td><td>A graph adds concepts and gives you nothing back. Don't.</td></tr>
-  <tr><td>Needs to retry a step with different input</td><td><strong>Graph</strong></td><td>"Retry" is a backward edge. You can fake it with a <code>while</code> loop, and past two of them you've written a worse graph engine.</td></tr>
+  <tr><td>Needs to retry a step</td><td><strong>It depends</strong></td><td>A local transient retry belongs in that node's retry policy. Use a graph edge when another attempt must change shared state, revisit earlier work, or take a different route.</td></tr>
   <tr><td>Needs to ask a human and continue afterwards</td><td class="yes"><strong>Graph</strong></td><td>You must pause, persist, and resume at the right node. Day 3 and Day 5.</td></tr>
-  <tr><td>Picks different tools depending on what it finds</td><td><strong>Graph</strong></td><td>That's a conditional edge.</td></tr>
+  <tr><td>Picks different tools depending on what it finds</td><td><strong>Plain loop or graph</strong></td><td>One model/tool loop can be ordinary code. A graph earns its keep when several named steps need explicit, inspectable routing and recovery.</td></tr>
   <tr><td>Might loop an unknown number of times</td><td><strong>Graph</strong></td><td>And it needs an exit condition. §4.</td></tr>
   <tr><td>Is one LLM call with a tool or two</td><td class="yes"><strong>Just call the API</strong></td><td>Day 2 makes this case properly. It's more often right than the ecosystem suggests.</td></tr>
 </table>
 
 <div class="verdict">
 <div class="label">The honest test</div>
-<strong>Count the backward edges.</strong> Zero backward edges means you have a pipeline, and you should build a pipeline. One or more means you have a state machine, whether or not you use a framework — and at that point using one is bookkeeping you don't have to write yourself.
+Ask whether the workflow needs <strong>durable pause-and-resume, loops spanning several steps, explicit inspectable routing, or recovery from saved state</strong>. Those are strong graph signals. Conditional logic by itself is not: an <code>if</code>, local retry, or small model/tool loop may be clearer as ordinary code. Count backward edges as a useful clue, not as the sole architecture test.
 </div>
 
 <h2>6. The Same Idea in Three Domains</h2>
@@ -324,7 +324,113 @@ The <em>shape</em> is identical in all three — a gather/check loop feeding a d
 <p style="margin-top:0.7rem;margin-bottom:0;">That's the thing to notice as an architect. The interesting design decisions in an agent are almost never "which framework" — they're "when does this stop, and who decided that."</p>
 </div>
 
-<h2>7. What LangGraph Adds On Top</h2>
+<h2>7. Build the Same Agent in Real LangGraph</h2>
+
+<p>The custom engine showed the mechanism with nothing hidden. Now build the same retail agent using the actual Graph API. This version is still deterministic — keyword matching instead of a model — because we are isolating the orchestration. Swapping in an LLM changes what <code>classify</code> does; it does not change the state, edges, exit condition, or execution model.</p>
+
+<h3>Start with the state contract</h3>
+
+<div class="code-inline">import operator
+from typing import Annotated, TypedDict
+
+class AgentState(TypedDict, total=False):
+    messages: Annotated[list[str], operator.add]
+    order_id: str
+    intent: str
+    confident: bool
+    clarify_count: int
+    decision: str
+    reason: str</div>
+
+<p>This is more than type documentation. Each key is a <strong>state channel</strong>, and its annotation defines how updates merge. A node returning <code>{"intent": "refund"}</code> overwrites the scalar. A node returning <code>{"messages": ["one more message"]}</code> appends because <code>operator.add</code> is the reducer.</p>
+
+<div class="caution">
+<div class="label">Reducers are part of your data model</div>
+Without a reducer, the newest update replaces the previous value. That is correct for <code>intent</code> and disastrous for conversation history. Do not put a reducer on every list mechanically either: append-only semantics are wrong when an item must be corrected or deduplicated. The state schema is where you make that choice explicit.
+</div>
+
+<h3>Nodes return deltas, not the whole bag</h3>
+
+<div class="code-inline">def classify(state: AgentState) -> AgentState:
+    text = " ".join(state["messages"]).lower()
+    if "refund" in text:
+        return {"intent": "refund", "confident": True}
+    if "where is" in text:
+        return {"intent": "track", "confident": True}
+    return {"intent": "unknown", "confident": False}
+
+def ask_clarify(state: AgentState) -> AgentState:
+    return {
+        "clarify_count": state.get("clarify_count", 0) + 1,
+        "messages": ["user clarification: where is my parcel"],
+    }</div>
+
+<p>The runtime merges each returned delta into state using the channel's reducer. Returning only changed fields makes ownership visible: <code>classify</code> owns classification, while <code>ask_clarify</code> owns the counter and new message. It also makes streamed updates and tests much easier to read.</p>
+
+<h3>Build first, compile second, execute third</h3>
+
+<div class="code-inline">from langgraph.graph import START, END, StateGraph
+
+builder = StateGraph(AgentState)
+builder.add_node("classify", classify)
+builder.add_node("ask_clarify", ask_clarify)
+builder.add_node("handle_track", handle_track)
+builder.add_node("give_up", give_up)
+
+builder.add_edge(START, "classify")
+builder.add_conditional_edges("classify", after_classify)
+builder.add_edge("ask_clarify", "classify")       # the backward edge
+builder.add_edge("handle_track", END)
+builder.add_edge("give_up", END)
+
+graph = builder.compile()</div>
+
+<p><code>StateGraph</code> is the definition being assembled. <code>compile()</code> validates that definition and constructs the executable runtime; it does not run a customer request. The compiled graph exposes <code>invoke</code>, <code>stream</code>, and later the persistence hooks used in Days 3 and 5.</p>
+
+<div class="code-inline">initial = {"messages": ["hi, this isn't what I expected"]}
+
+# Final accumulated state
+final = graph.invoke(initial, config={"recursion_limit": 25})
+
+# Only the delta produced by each node
+for update in graph.stream(
+    initial,
+    config={"recursion_limit": 25},
+    stream_mode="updates",
+):
+    print(update)</div>
+
+<p><code>invoke()</code> is convenient when the caller needs only the final answer. <code>stream_mode="updates"</code> emits the node-level deltas as execution proceeds: first classification, then clarification, then the second classification, then tracking. That stream is the beginning of an observable UI and a debuggable trace—not merely a typing animation.</p>
+
+<div class="verdict">
+<div class="label">Two different stopping mechanisms</div>
+The business exit condition is <em>hand off after two unanswered clarifications</em>. The runtime <code>recursion_limit</code> is the emergency guard that catches a faulty graph when that condition fails to fire. If the guard stops normal traffic, fix the graph; do not simply make the number larger.
+</div>
+
+<h3>What happens at a node boundary</h3>
+
+<p>LangGraph schedules work in <strong>super-steps</strong>. With a checkpointer, durable snapshots are written at those boundaries—not after arbitrary Python lines inside a node. If execution pauses or fails and later resumes, an affected node can run again from the beginning. That is why a node that charges a card, sends a refund, or binds a policy must use an idempotency key. Persistence remembers orchestration state; it does not make an external side effect exactly-once.</p>
+
+<table class="matrix-table">
+  <tr><th>This example teaches now</th><th>Deliberately deferred</th><th>Covered</th></tr>
+  <tr><td>Typed state and reducer semantics</td><td>Durable checkpoints and thread identity</td><td>Day 5</td></tr>
+  <tr><td>Nodes as partial state updates</td><td>Real human pause, approval payload, and resume</td><td>Day 3</td></tr>
+  <tr><td>Fixed and conditional edges</td><td>Retries, idempotency, circuit breakers, dead letters</td><td>Day 4</td></tr>
+  <tr><td>Invoke, update streaming, and recursion guard</td><td>Model quality, prompts, and tool calling</td><td>Later weeks</td></tr>
+</table>
+
+<div class="trythis">
+<div class="label">Run the real implementation</div>
+<div class="code-inline">cd Claude/week4/day1
+uv run python langgraph_refund_agent.py
+uv run python langgraph_refund_agent.py --stream
+uv run python langgraph_refund_agent.py --request "refund please" --order-id A-1002
+uv run python langgraph_refund_agent.py --runaway --max-steps 4
+uv run python -m unittest test_langgraph_refund_agent.py -v</div>
+Read the streamed node names in order, then open the test file. The tests treat control flow, accumulated messages, business exits, and the runtime guard as observable behavior—not implementation trivia.
+</div>
+
+<h2>8. What LangGraph Adds On Top</h2>
 
 <p>The 40-line engine in the companion script is a real state machine. LangGraph is that plus the things you'd otherwise write yourself:</p>
 
@@ -350,7 +456,7 @@ The <em>shape</em> is identical in all three — a gather/check loop feeding a d
 </div>
 </details>
 
-<h2>8. Companion Script</h2>
+<h2>9. Companion Scripts and Tests</h2>
 
 <table class="matrix-table">
   <tr><th>Script</th><th>What it does</th></tr>
@@ -358,15 +464,25 @@ The <em>shape</em> is identical in all three — a gather/check loop feeding a d
     <td><code>week4/day1/state_machine_trace.py</code></td>
     <td>A complete graph engine in ~40 lines plus a retail refund agent, running the same ambiguous request through a chain and a graph. Prints the <strong>full state trace</strong> — every node, every field that changed — so you watch the bag fill up rather than take it on trust. <code>--runaway</code> demonstrates the no-exit cycle and the guard that catches it.</td>
   </tr>
+  <tr>
+    <td><code>week4/day1/langgraph_refund_agent.py</code></td>
+    <td>The same agent built with the real LangGraph Graph API: typed state, an append reducer, partial node updates, conditional routing, compilation, update streaming, and the runtime recursion guard. It is deterministic and makes no network calls.</td>
+  </tr>
+  <tr>
+    <td><code>week4/day1/test_langgraph_refund_agent.py</code></td>
+    <td>Seven executable tests covering both refund-policy branches, clarification, reducer behavior, streamed node order, the business exit condition, and the runaway-loop backstop.</td>
+  </tr>
 </table>
 
 <div class="code-inline">cd Claude/week4/day1
 python state_machine_trace.py                       # chain guesses wrong, graph asks
 python state_machine_trace.py --request "where is my order"   # clear intent, no loop
 python state_machine_trace.py --runaway             # the infinite loop, and the guard
-python state_machine_trace.py --quiet               # results only</div>
+python state_machine_trace.py --quiet               # results only
+uv run python langgraph_refund_agent.py --stream    # the real Graph API
+uv run python -m unittest test_langgraph_refund_agent.py -v</div>
 
-<h2>9. Interactive Assessment Quiz</h2>
+<h2>10. Interactive Assessment Quiz</h2>
 
 <div class="quiz-container">
 <h3>Fundamentals Check</h3>
@@ -427,7 +543,7 @@ python state_machine_trace.py --quiet               # results only</div>
 
 </div>
 
-<p class="ask-agent">Want to walk through the engine line by line, sketch your own agent's graph, or work out where its exit conditions should come from? Ask in your chat session.</p>
+<p class="ask-agent">Want to trace the real graph line by line, design your state and reducers, or work out where your exit conditions should come from? Ask in your chat session.</p>
 
 <div class="nav">
 <a href="../day0/0019a-agent-orchestration-from-zero.html">&larr; Day 0: Agent Orchestration From Zero</a>
